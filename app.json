@@ -1,0 +1,100 @@
+{
+  "expo": {
+    "name": "ShakTranslate",
+    "slug": "shak-translate",
+    "owner": "codevamp-tech",
+    "scheme": "shaktranslate",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.cis.shaktranslate"
+    },
+    "android": {
+      "versionCode": 3,
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "package": "com.cis.shaktranslate",
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.CAMERA"
+      ],
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "shaktranslate"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "@siteed/audio-studio",
+        {
+          "iosConfig": {
+            "microphoneUsageDescription": "Allow ShakTranslate to access your microphone to record speech for translation."
+          },
+          "enableBackgroundAudio": false,
+          "enableNotifications": false,
+          "enableDeviceDetection": false
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Allow ShakTranslate to access your microphone to record speech for translation."
+        }
+      ],
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Allow ShakTranslate to access your microphone to record speech for translation."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow ShakTranslate to access your camera to scan QR codes for joining sessions."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow ShakTranslate to access your photos to update your profile picture."
+        }
+      ],
+      "expo-font",
+      "expo-secure-store",
+      "expo-web-browser"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "60f773f2-40c4-4470-a704-bff8962d4ae9"
+      }
+    }
+  }
+}
