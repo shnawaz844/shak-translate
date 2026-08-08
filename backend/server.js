@@ -8,10 +8,10 @@ const { uploadAudio } = require('./storageService');
 
 const PORT = process.env.PORT || 8080;
 
-// AI translation is temporarily bypassed while we validate a plain WebRTC
-// call (peer-to-peer audio, no Gemini round-trip) for baseline call quality.
-// Flip back to true to restore the old audio_stream_chunk -> Gemini path.
-const AI_TRANSLATION_ENABLED = false;
+// The plain WebRTC call (src/hooks/useWebRTCCall.ts) validated that call
+// quality/latency is solid without Gemini in the loop. AI translation is
+// back on for real: audio_stream_chunk now feeds Gemini as before.
+const AI_TRANSLATION_ENABLED = true;
 
 const CLERK_SECRET_KEY = process.env.CLERK_SECRET_KEY;
 if (!CLERK_SECRET_KEY) {
@@ -526,7 +526,7 @@ wss.on('connection', (ws) => {
 
     // ── STREAMED AUDIO CHUNK (continuous, ~100-250ms of raw PCM) ────────────
     if (type === 'audio_stream_chunk') {
-      if (!AI_TRANSLATION_ENABLED) return; // WebRTC call bypasses this path entirely
+      if (!AI_TRANSLATION_ENABLED) return;
       const { sessionId, role, audioBase64, mimeType } = message;
       const session = sessions.get(sessionId);
 
