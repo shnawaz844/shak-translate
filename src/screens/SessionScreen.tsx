@@ -52,13 +52,82 @@ export function SessionScreen({
   // ── Audio Playback ──────────────────────────────────────────────────────────
   const audioQueueRef = useRef<{ base64: string; index: number; text: string }[]>([]);
   const isPlayingQueueRef = useRef(false);
-  const currentSoundRef = useRef<AudioPlayer | null>(null);
+  const currentSoundRef = useRef<AudioPlayer | null>(null); // native only
   const isBargedInRef = useRef(false); // true while partner is speaking (barge-in paused)
 
   // Audio mode (mic + speaker routing) is configured once by useAudioRecorder
   // itself when streaming starts — see src/hooks/useAudioRecorder.ts. Keeping
   // it in one place avoids two audio modules fighting over session config on
   // a screen where capture and playback run concurrently.
+
+  // ── Web-only playback: Web Audio API buffer source, not expo-audio's
+  // <audio>-element-backed AudioPlayer. iOS Safari has a long-standing bug
+  // where an active getUserMedia mic stream silences ALL HTMLMediaElement
+  // ("<audio>"/"<video>") playback on the page. Our mic stays live for the
+  // whole call (see useAudioRecorder.ts), so on iPhone that bug silenced
+  // every translated reply for the entire call — the sender could be heard
+  // fine (their audio leaves via the mic, unaffected), but the listener
+  // never heard anything back even though the transcript kept updating.
+  // Web Audio buffer playback doesn't touch the <audio> element code path
+  // at all, which avoids the conflict.
+  const webPlaybackCtxRef = useRef<AudioContext | null>(null);
+  const webPlaybackStateRef = useRef<{
+    buffer: AudioBuffer;
+    source: AudioBufferSourceNode | null; // null while paused
+    startedAtCtxTime: number;
+    offsetSec: number;
+    resolve: () => void;
+  } | null>(null);
+  const webIntentionalStopRef = useRef(false);
+
+  const getWebPlaybackContext = useCallback((): AudioContext => {
+    if (!webPlaybackCtxRef.current) {
+      const Ctor: typeof AudioContext = (window as any).AudioContext || (window as any).webkitAudioContext;
+      webPlaybackCtxRef.current = new Ctor();
+    }
+    return webPlaybackCtxRef.current;
+  }, []);
+
+  const webPausePlayback = useCallback(() => {
+    const state = webPlaybackStateRef.current;
+    const ctx = webPlaybackCtxRef.current;
+    if (!state || !state.source || !ctx) return;
+    const elapsed = ctx.currentTime - state.startedAtCtxTime;
+    webIntentionalStopRef.current = true;
+    try { state.source.stop(); } catch (_) {}
+    webPlaybackStateRef.current = { ...state, source: null, offsetSec: state.offsetSec + elapsed };
+  }, []);
+
+  const webResumePlayback = useCallback(() => {
+    const state = webPlaybackStateRef.current;
+    const ctx = webPlaybackCtxRef.current;
+    if (!state || state.source || !ctx) return; // already playing, or nothing paused
+    if (state.offsetSec >= state.buffer.duration) {
+      webPlaybackStateRef.current = null;
+      state.resolve();
+      return;
+    }
+    const source = ctx.createBufferSource();
+    source.buffer = state.buffer;
+    source.connect(ctx.destination);
+    source.onended = () => {
+      if (webIntentionalStopRef.current) { webIntentionalStopRef.current = false; return; }
+      const cur = webPlaybackStateRef.current;
+      if (cur?.source === source) {
+        webPlaybackStateRef.current = null;
+        cur.resolve();
+      }
+    };
+    source.start(0, state.offsetSec);
+    webPlaybackStateRef.current = { ...state, source, startedAtCtxTime: ctx.currentTime };
+  }, []);
+
+  function base64ToArrayBuffer(base64: string): ArrayBuffer {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer;
+  }
 
   const processAudioQueue = useCallback(async () => {
     if (isPlayingQueueRef.current || audioQueueRef.current.length === 0) return;
@@ -82,16 +151,40 @@ export function SessionScreen({
         setCurrentReceivedText((prev) => (prev ? prev + ' ' + chunk.text : chunk.text));
       }
 
-      if (chunk.base64) {
+      if (!chunk.base64) continue;
+
+      if (Platform.OS === 'web') {
+        try {
+          const ctx = getWebPlaybackContext();
+          if (ctx.state === 'suspended') await ctx.resume();
+          const audioBuffer = await ctx.decodeAudioData(base64ToArrayBuffer(chunk.base64));
+
+          await new Promise<void>((resolve) => {
+            const source = ctx.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(ctx.destination);
+            source.onended = () => {
+              if (webIntentionalStopRef.current) { webIntentionalStopRef.current = false; return; }
+              const cur = webPlaybackStateRef.current;
+              if (cur?.source === source) {
+                webPlaybackStateRef.current = null;
+                resolve();
+              }
+            };
+            webPlaybackStateRef.current = { buffer: audioBuffer, source, startedAtCtxTime: ctx.currentTime, offsetSec: 0, resolve };
+            source.start(0);
+          });
+        } catch (e) {
+          console.error('[SessionScreen] Web playback error:', e);
+          webPlaybackStateRef.current = null;
+        }
+      } else {
         try {
           const player = createAudioPlayer({ uri: `data:audio/wav;base64,${chunk.base64}` });
           currentSoundRef.current = player;
           player.play();
 
           await new Promise<void>((resolve) => {
-            // expo-audio's web AudioPlayer.d.ts doesn't carry the addListener
-            // signature inherited from its SharedObject base, even though it's
-            // present at runtime (same as every other Expo SharedObject).
             const subscription = (player as any).addListener('playbackStatusUpdate', (s: any) => {
               if (s.didJustFinish) {
                 subscription.remove();
@@ -111,7 +204,7 @@ export function SessionScreen({
 
     setIsPlayingAudio(false);
     isPlayingQueueRef.current = false;
-  }, []);
+  }, [getWebPlaybackContext]);
 
   const { status, isProcessing, sendAudioStreamChunk, sendPauseQueue, sendResumeQueue, endSession } = useWebSocket({
     onTranslatedAudioChunk: useCallback((payload: any) => {
@@ -152,10 +245,12 @@ export function SessionScreen({
     // Server confirmed queue resumed — unpause local loop and resume sound
     onQueueResumed: useCallback(() => {
       isBargedInRef.current = false;
-      if (currentSoundRef.current) {
+      if (Platform.OS === 'web') {
+        webResumePlayback();
+      } else if (currentSoundRef.current) {
         try { currentSoundRef.current.play(); } catch (_) {}
       }
-    }, []),
+    }, [webResumePlayback]),
   });
 
   const isBargeInDebounceRef = useRef(false);
@@ -172,13 +267,15 @@ export function SessionScreen({
     isBargedInRef.current = true;
 
     // Pause the currently playing sound at its exact position
-    if (currentSoundRef.current) {
+    if (Platform.OS === 'web') {
+      webPausePlayback();
+    } else if (currentSoundRef.current) {
       try { currentSoundRef.current.pause(); } catch (_) {}
     }
 
     // Tell server to pause the partner's drain loop (keeps queue intact)
     sendPauseQueue(partnerRole, sessionId);
-  }, [isPlayingAudio, partnerSpeaking, partnerRole, sessionId, sendPauseQueue]);
+  }, [isPlayingAudio, partnerSpeaking, partnerRole, sessionId, sendPauseQueue, webPausePlayback]);
 
   // Called when local speech silence is detected after a barge-in — resume partner
   const handleBargeInRelease = useCallback(() => {
@@ -267,6 +364,12 @@ export function SessionScreen({
     return () => {
       if (currentSoundRef.current) {
         try { currentSoundRef.current.remove(); } catch (_) {}
+      }
+      if (webPlaybackStateRef.current?.source) {
+        try { webPlaybackStateRef.current.source.stop(); } catch (_) {}
+      }
+      if (webPlaybackCtxRef.current) {
+        webPlaybackCtxRef.current.close().catch(() => {});
       }
     };
   }, []);
