@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { Platform } from 'react-native';
 import { useAudioRecorder as useAudioStudioRecorder } from '@siteed/audio-studio';
 import type { AudioDataEvent } from '@siteed/audio-studio';
 
@@ -15,11 +16,16 @@ import type { AudioDataEvent } from '@siteed/audio-studio';
 // robust than a hand-tuned dB heuristic and doesn't force a multi-second
 // silence wait before it will even consider a turn "done".
 //
-// Note: expo-audio's own recorder is file-based only (no raw streaming
-// callback), so capture goes through @siteed/audio-studio, which is built
-// specifically for this. Playback of translated replies still goes through
-// expo-audio's AudioPlayer (see SessionScreen.tsx) — that part of expo-audio
-// is real and verified against the installed package.
+// On web this is a small, fully-owned getUserMedia + Web Audio capture — the
+// same mic constraints (echoCancellation/noiseSuppression/autoGainControl)
+// that were validated end-to-end by the plain WebRTC call prototype
+// (useWebRTCCall.ts) before AI translation was layered back on. It
+// deliberately does NOT go through @siteed/audio-studio's web implementation:
+// that path already needed patching once for silently dropping Float32 data,
+// and a later attempt to fix its effective sample rate caused a regression —
+// a black box we don't control isn't worth the risk for the one piece (raw
+// PCM capture) that's simple enough to own directly. Native (iOS/Android)
+// keeps using @siteed/audio-studio below, unchanged.
 //
 // The energy meter below is intentionally simple: it only drives the local
 // "SPEECH DETECTED" UI pulse and the waveform bars. It never gates or drops
@@ -31,6 +37,10 @@ import type { AudioDataEvent } from '@siteed/audio-studio';
 const SAMPLE_RATE = 16000;
 // How often onAudioStream fires with a new buffer.
 const STREAM_INTERVAL_MS = 150;
+// Web capture buffer size in samples (must be a power of two for
+// ScriptProcessorNode). 2048 samples @ 16kHz ≈ 128ms, close to the native
+// STREAM_INTERVAL_MS cadence above.
+const WEB_BUFFER_SIZE = 2048;
 
 // Simple energy-based "is there sound" indicator — cosmetic only.
 const ENERGY_EMA_ALPHA = 0.4;
@@ -81,8 +91,8 @@ function base64Encode(bytes: Uint8Array): string {
 }
 
 /**
- * Web delivers raw Float32 PCM samples (-1..1) instead of a base64 string —
- * convert to the same 16-bit PCM base64 wire format native platforms send.
+ * Web delivers raw Float32 PCM samples (-1..1) — convert to the same 16-bit
+ * PCM base64 wire format native platforms send.
  */
 function float32ToBase64PCM16(float32: Float32Array): string {
   const bytes = new Uint8Array(float32.length * 2);
@@ -111,6 +121,7 @@ export function useAudioRecorder({ enabled, onChunk }: AudioRecorderOptions) {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [isWebActive, setIsWebActive] = useState(false);
 
   const energyEmaRef = useRef(0);
   const speakingRef = useRef(false);
@@ -118,15 +129,7 @@ export function useAudioRecorder({ enabled, onChunk }: AudioRecorderOptions) {
 
   useEffect(() => { onChunkRef.current = onChunk; }, [onChunk]);
 
-  const { startRecording, stopRecording, isRecording } = useAudioStudioRecorder();
-
-  const handleAudioStream = useCallback(async (event: AudioDataEvent) => {
-    // Native delivers a base64 PCM string directly; web delivers a raw
-    // Float32Array of samples that needs converting to the same wire format.
-    const base64Data = typeof event.data === 'string'
-      ? event.data
-      : float32ToBase64PCM16(event.data as unknown as Float32Array);
-
+  const emitChunk = useCallback((base64Data: string) => {
     onChunkRef.current(base64Data, `audio/pcm;rate=${SAMPLE_RATE}`);
 
     const bytes = base64Decode(base64Data);
@@ -145,7 +148,110 @@ export function useAudioRecorder({ enabled, onChunk }: AudioRecorderOptions) {
     }
   }, []);
 
+  // ── Native capture (iOS/Android): @siteed/audio-studio, unchanged ─────────
+  const { startRecording, stopRecording, isRecording } = useAudioStudioRecorder();
+
+  const handleNativeAudioStream = useCallback(async (event: AudioDataEvent) => {
+    const base64Data = typeof event.data === 'string'
+      ? event.data
+      : float32ToBase64PCM16(event.data as unknown as Float32Array);
+    emitChunk(base64Data);
+  }, [emitChunk]);
+
+  // ── Web capture: direct getUserMedia + Web Audio, same mic constraints ────
+  // validated by the WebRTC call prototype. Requesting the AudioContext at
+  // exactly SAMPLE_RATE lets the browser's own (well-tested) resampler
+  // handle converting from the mic's native rate, instead of us hand-rolling
+  // resampling again.
+  const webAudioContextRef = useRef<AudioContext | null>(null);
+  const webStreamRef = useRef<MediaStream | null>(null);
+  const webSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const webProcessorNodeRef = useRef<ScriptProcessorNode | null>(null);
+
+  const stopWebCapture = useCallback(() => {
+    webProcessorNodeRef.current?.disconnect();
+    webProcessorNodeRef.current = null;
+    webSourceNodeRef.current?.disconnect();
+    webSourceNodeRef.current = null;
+    webStreamRef.current?.getTracks().forEach(t => t.stop());
+    webStreamRef.current = null;
+    if (webAudioContextRef.current) {
+      webAudioContextRef.current.close().catch(() => {});
+      webAudioContextRef.current = null;
+    }
+    setIsWebActive(false);
+  }, []);
+
+  const startWebCapture = useCallback(async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+    webStreamRef.current = stream;
+
+    const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
+    const audioContext: AudioContext = new AudioContextCtor({ sampleRate: SAMPLE_RATE });
+    webAudioContextRef.current = audioContext;
+
+    const source = audioContext.createMediaStreamSource(stream);
+    webSourceNodeRef.current = source;
+
+    // ScriptProcessorNode is deprecated but universally supported and far
+    // simpler to wire up reliably than an AudioWorklet module through
+    // Metro's web bundler — reliability matters more than avoiding a
+    // deprecation warning here.
+    const processor = audioContext.createScriptProcessor(WEB_BUFFER_SIZE, 1, 1);
+    webProcessorNodeRef.current = processor;
+
+    processor.onaudioprocess = (event) => {
+      const input = event.inputBuffer.getChannelData(0);
+      emitChunk(float32ToBase64PCM16(input));
+    };
+
+    source.connect(processor);
+    // ScriptProcessorNode only fires onaudioprocess while connected into the
+    // graph's destination, even though we don't want it audible — mute via
+    // gain instead of skipping the connection.
+    const silentGain = audioContext.createGain();
+    silentGain.gain.value = 0;
+    processor.connect(silentGain);
+    silentGain.connect(audioContext.destination);
+
+    setIsWebActive(true);
+  }, [emitChunk]);
+
   useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    let cancelled = false;
+
+    if (enabled) {
+      startWebCapture().then(() => {
+        if (!cancelled) setError(null);
+      }).catch((e) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : 'Microphone error');
+      });
+    } else {
+      stopWebCapture();
+      energyEmaRef.current = 0;
+      speakingRef.current = false;
+      setIsSpeaking(false);
+      setAudioLevel(0);
+    }
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    return () => { stopWebCapture(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Native start/stop, unchanged behavior ─────────────────────────────────
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
     let cancelled = false;
 
     const manage = async () => {
@@ -168,7 +274,7 @@ export function useAudioRecorder({ enabled, onChunk }: AudioRecorderOptions) {
                 },
               },
               android: { audioFocusStrategy: 'communication' },
-              onAudioStream: handleAudioStream,
+              onAudioStream: handleNativeAudioStream,
             });
           }
           if (!cancelled) setError(null);
@@ -192,6 +298,7 @@ export function useAudioRecorder({ enabled, onChunk }: AudioRecorderOptions) {
   }, [enabled]);
 
   useEffect(() => {
+    if (Platform.OS === 'web') return;
     return () => {
       if (isRecording) stopRecording().catch(() => {});
     };
@@ -199,7 +306,7 @@ export function useAudioRecorder({ enabled, onChunk }: AudioRecorderOptions) {
   }, []);
 
   return {
-    isActive: isRecording,
+    isActive: Platform.OS === 'web' ? isWebActive : isRecording,
     isSpeaking,
     audioLevel,
     error,
