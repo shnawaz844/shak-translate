@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import * as SecureStore from 'expo-secure-store';
+import { storage } from '../utils/storageCompat';
 import {
   View,
   Text,
@@ -54,14 +54,14 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
   // Persist the user's chosen language so it survives session end / remounts
   const MY_LANG_KEY = 'shak_my_language';
   useEffect(() => {
-    SecureStore.getItemAsync(MY_LANG_KEY)
+    storage.getItem(MY_LANG_KEY)
       .then(saved => { if (saved) setMyLang(saved); })
       .catch(() => {});
   }, []);
 
   const handleSetMyLang = (lang: string) => {
     setMyLang(lang);
-    SecureStore.setItemAsync(MY_LANG_KEY, lang).catch(() => {});
+    storage.setItem(MY_LANG_KEY, lang).catch(() => {});
   };
   const [showQR, setShowQR] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
