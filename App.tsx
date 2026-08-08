@@ -36,7 +36,7 @@ function MainApp() {
   const { user, isLoaded } = useUser();
 
   // Determine initial screen: gate on onboarding completion
-  const isOnboarded = !!(user?.publicMetadata as any)?.onboardingComplete;
+  const isOnboarded = !!(user?.unsafeMetadata as any)?.onboardingComplete;
   const [screen, setScreen] = useState<AppScreen>(isOnboarded ? 'home' : 'onboarding');
   const [sessionParams, setSessionParams] = useState<SessionParams | null>(null);
   const [activeConversation, setActiveConversation] = useState<{ id: string, myUserId: string } | null>(null);

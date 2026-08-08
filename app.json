@@ -2,7 +2,7 @@
   "expo": {
     "name": "ShakTranslate",
     "slug": "shak-translate",
-    "owner": "codevamp-tech",
+    "owner": "shakfitboy",
     "scheme": "shaktranslate",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -89,11 +89,12 @@
       ],
       "expo-font",
       "expo-secure-store",
-      "expo-web-browser"
+      "expo-web-browser",
+      "expo-status-bar"
     ],
     "extra": {
       "eas": {
-        "projectId": "60f773f2-40c4-4470-a704-bff8962d4ae9"
+        "projectId": "bd4bb1df-2bb0-4048-885a-d17d1ad1d41c"
       }
     }
   }

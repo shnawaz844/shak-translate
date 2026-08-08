@@ -64,6 +64,36 @@ function base64Decode(base64: string): Uint8Array {
   return new Uint8Array(bytes);
 }
 
+/** Encodes a Uint8Array to base64 without relying on RN's global atob/Buffer shims. */
+function base64Encode(bytes: Uint8Array): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  let result = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i];
+    const b1 = i + 1 < bytes.length ? bytes[i + 1] : undefined;
+    const b2 = i + 2 < bytes.length ? bytes[i + 2] : undefined;
+    result += chars[b0 >> 2];
+    result += chars[((b0 & 0x03) << 4) | ((b1 ?? 0) >> 4)];
+    result += b1 === undefined ? '=' : chars[((b1 & 0x0f) << 2) | ((b2 ?? 0) >> 6)];
+    result += b2 === undefined ? '=' : chars[b2 & 0x3f];
+  }
+  return result;
+}
+
+/**
+ * Web delivers raw Float32 PCM samples (-1..1) instead of a base64 string —
+ * convert to the same 16-bit PCM base64 wire format native platforms send.
+ */
+function float32ToBase64PCM16(float32: Float32Array): string {
+  const bytes = new Uint8Array(float32.length * 2);
+  const view = new DataView(bytes.buffer);
+  for (let i = 0; i < float32.length; i++) {
+    const sample = Math.max(-1, Math.min(1, float32[i]));
+    view.setInt16(i * 2, Math.round(sample * 32767), true);
+  }
+  return base64Encode(bytes);
+}
+
 /** Quick RMS energy (0..1) over an int16 PCM buffer, for the UI meter only. */
 function computeEnergy(bytes: Uint8Array): number {
   const sampleCount = Math.floor(bytes.length / 2);
@@ -91,10 +121,15 @@ export function useAudioRecorder({ enabled, onChunk }: AudioRecorderOptions) {
   const { startRecording, stopRecording, isRecording } = useAudioStudioRecorder();
 
   const handleAudioStream = useCallback(async (event: AudioDataEvent) => {
-    if (typeof event.data !== 'string') return; // native delivers base64 PCM with the default 'raw' streamFormat
-    onChunkRef.current(event.data, `audio/pcm;rate=${SAMPLE_RATE}`);
+    // Native delivers a base64 PCM string directly; web delivers a raw
+    // Float32Array of samples that needs converting to the same wire format.
+    const base64Data = typeof event.data === 'string'
+      ? event.data
+      : float32ToBase64PCM16(event.data as unknown as Float32Array);
 
-    const bytes = base64Decode(event.data);
+    onChunkRef.current(base64Data, `audio/pcm;rate=${SAMPLE_RATE}`);
+
+    const bytes = base64Decode(base64Data);
     const energy = computeEnergy(bytes);
     energyEmaRef.current = ENERGY_EMA_ALPHA * energy + (1 - ENERGY_EMA_ALPHA) * energyEmaRef.current;
     setAudioLevel(energyEmaRef.current);
@@ -102,9 +137,11 @@ export function useAudioRecorder({ enabled, onChunk }: AudioRecorderOptions) {
     if (!speakingRef.current && energyEmaRef.current > SPEAKING_ON_THRESHOLD) {
       speakingRef.current = true;
       setIsSpeaking(true);
+      console.log(`[LATENCY][client] Local speech START at ${Date.now()}`);
     } else if (speakingRef.current && energyEmaRef.current < SPEAKING_OFF_THRESHOLD) {
       speakingRef.current = false;
       setIsSpeaking(false);
+      console.log(`[LATENCY][client] Local speech END at ${Date.now()}`);
     }
   }, []);
 

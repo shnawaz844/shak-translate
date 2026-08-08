@@ -11,6 +11,7 @@ import {
   ScrollView,
   ActivityIndicator,
   FlatList,
+  TextInput,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { LanguageSelector } from '../components/LanguageSelector';
@@ -64,13 +65,14 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
   };
   const [showQR, setShowQR] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
+  const [manualCode, setManualCode] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [recentConversations, setRecentConversations] = useState<RecentConversation[]>([]);
   const [loadingConvs, setLoadingConvs] = useState(false);
   const roleRef = useRef<'host' | 'guest' | null>(null);
   const userId = user?.id;
   // Voice profile from Clerk metadata — used for Gemini voice warm-up at session start
-  const meta = user?.publicMetadata as any;
+  const meta = user?.unsafeMetadata as any;
   const speakerGender: string | undefined = meta?.gender;
   const speakerAge: number | undefined = meta?.age !== undefined ? Number(meta.age) : undefined;
 
@@ -202,6 +204,26 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
             <Feather name="camera" size={20} color="#39FF14" />
             <Text style={styles.secondaryBtnText}>Join Session (Scan QR)</Text>
           </TouchableOpacity>
+
+          {/* Fallback for when camera scanning isn't available/working */}
+          <View style={styles.manualJoinRow}>
+            <TextInput
+              style={styles.manualJoinInput}
+              placeholder="Or paste session code"
+              placeholderTextColor="rgba(255,255,255,0.3)"
+              value={manualCode}
+              onChangeText={setManualCode}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            <TouchableOpacity
+              style={[styles.manualJoinBtn, !manualCode.trim() && styles.manualJoinBtnDisabled]}
+              disabled={!manualCode.trim()}
+              onPress={() => handleScanned(manualCode.trim())}
+            >
+              <Text style={styles.manualJoinBtnText}>Join</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* Recent Conversations */}
@@ -390,6 +412,20 @@ const styles = StyleSheet.create({
     borderRadius: 16, paddingVertical: 18, paddingHorizontal: 24,
   },
   secondaryBtnText: { color: '#39FF14', fontSize: 16, fontWeight: '700' },
+  manualJoinRow: { flexDirection: 'row', gap: 8, marginTop: 12 },
+  manualJoinInput: {
+    flex: 1, color: '#fff', fontSize: 14,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
+    borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12,
+  },
+  manualJoinBtn: {
+    backgroundColor: 'rgba(57,255,20,0.15)',
+    borderWidth: 1, borderColor: 'rgba(57,255,20,0.3)',
+    borderRadius: 12, paddingHorizontal: 20, justifyContent: 'center',
+  },
+  manualJoinBtnDisabled: { opacity: 0.4 },
+  manualJoinBtnText: { color: '#39FF14', fontSize: 14, fontWeight: '700' },
   footer: {
     color: 'rgba(255,255,255,0.2)', fontSize: 11,
     textAlign: 'center', marginTop: 28, lineHeight: 17,

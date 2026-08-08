@@ -15,6 +15,10 @@ interface UseWebSocketOptions {
   onLockReleased?: () => void;
   onQueueResumed?: () => void;
   onSessionReadyEvent?: (partnerLang: string) => void;
+  onWebRTCOffer?: (sdp: any) => void;
+  onWebRTCAnswer?: (sdp: any) => void;
+  onWebRTCIceCandidate?: (candidate: any) => void;
+  onWebRTCReady?: () => void;
 }
 
 export function useWebSocket(options: UseWebSocketOptions = {}) {
@@ -43,5 +47,9 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     claimTurn: context.claimTurn,
     releaseTurn: context.releaseTurn,
     endSession: context.endSession,
+    sendWebRTCOffer: context.sendWebRTCOffer,
+    sendWebRTCAnswer: context.sendWebRTCAnswer,
+    sendWebRTCIceCandidate: context.sendWebRTCIceCandidate,
+    sendWebRTCReady: context.sendWebRTCReady,
   };
 }

@@ -8,6 +8,11 @@ const { uploadAudio } = require('./storageService');
 
 const PORT = process.env.PORT || 8080;
 
+// AI translation is temporarily bypassed while we validate a plain WebRTC
+// call (peer-to-peer audio, no Gemini round-trip) for baseline call quality.
+// Flip back to true to restore the old audio_stream_chunk -> Gemini path.
+const AI_TRANSLATION_ENABLED = false;
+
 const CLERK_SECRET_KEY = process.env.CLERK_SECRET_KEY;
 if (!CLERK_SECRET_KEY) {
   console.error('[server] CLERK_SECRET_KEY is not set — /clerk/update-profile will not work.');
@@ -294,8 +299,10 @@ function makeSessionCallbacks(session, sessionId, role) {
 
       if (!rs.turnActive) {
         rs.turnActive = true;
-        send(partnerSocket(), { type: 'partner_speaking' });
-        send(senderSocket(), { type: 'processing_started' });
+        rs.turnStartedAt = Date.now();
+        console.log(`[LATENCY][server] Turn ${chunk.turnId} (${role}): relaying first chunk to partner at ${rs.turnStartedAt}`);
+        send(partnerSocket(), { type: 'partner_speaking', turnId: chunk.turnId });
+        send(senderSocket(), { type: 'processing_started', turnId: chunk.turnId });
       }
 
       if (!rs.paused) {
@@ -305,6 +312,7 @@ function makeSessionCallbacks(session, sessionId, role) {
           mimeType: 'audio/wav',
           index: chunk.index,
           text: chunk.text,
+          turnId: chunk.turnId,
         });
       }
     },
@@ -312,17 +320,21 @@ function makeSessionCallbacks(session, sessionId, role) {
     onTurnComplete(result) {
       if (!sessions.has(sessionId)) return;
       rs.turnActive = false;
+      const relayMs = rs.turnStartedAt ? Date.now() - rs.turnStartedAt : null;
+      console.log(`[LATENCY][server] Turn ${result.turnId} (${role}): fully relayed, ${relayMs}ms from first chunk relayed to turn complete`);
 
-      send(senderSocket(), { type: 'processing_done' });
+      send(senderSocket(), { type: 'processing_done', turnId: result.turnId });
       send(senderSocket(), {
         type: 'transcript',
         originalText: result.originalText,
         translatedText: result.translatedText,
+        turnId: result.turnId,
       });
       send(partnerSocket(), {
         type: 'translated_audio_final',
         originalText: result.originalText,
         translatedText: result.translatedText,
+        turnId: result.turnId,
       });
       send(partnerSocket(), { type: 'lock_released' });
 
@@ -341,6 +353,19 @@ function makeSessionCallbacks(session, sessionId, role) {
           );
         }).catch(e => console.error('[db] insertMessage+upload failed:', e.message));
       }
+    },
+
+    onInterrupted({ turnId }) {
+      if (!sessions.has(sessionId)) return;
+      rs.turnActive = false;
+      console.log(`[LATENCY][server] Turn ${turnId} (${role}): interrupted, resetting turn state`);
+
+      // Without this, the partner's client would be stuck thinking we're
+      // still speaking forever (no translated_audio_final ever arrives for
+      // a discarded turn), and its own mic would stay muted if it's holding
+      // off sending audio while it thinks we're talking.
+      send(senderSocket(), { type: 'processing_done', turnId });
+      send(partnerSocket(), { type: 'lock_released' });
     },
 
     onError(err) {
@@ -439,14 +464,16 @@ wss.on('connection', (ws) => {
 
       // Open persistent Gemini Live sessions for both directions now that
       // both voice profiles are known — they stay open for the whole call.
-      warmupSession(
-        sessionId, 'host', session.hostLang, session.guestLang,
-        session.hostVoiceProfile || {}, makeSessionCallbacks(session, sessionId, 'host')
-      ).catch(console.error);
-      warmupSession(
-        sessionId, 'guest', session.guestLang, session.hostLang,
-        session.guestVoiceProfile || {}, makeSessionCallbacks(session, sessionId, 'guest')
-      ).catch(console.error);
+      if (AI_TRANSLATION_ENABLED) {
+        warmupSession(
+          sessionId, 'host', session.hostLang, session.guestLang,
+          session.hostVoiceProfile || {}, makeSessionCallbacks(session, sessionId, 'host')
+        ).catch(console.error);
+        warmupSession(
+          sessionId, 'guest', session.guestLang, session.hostLang,
+          session.guestVoiceProfile || {}, makeSessionCallbacks(session, sessionId, 'guest')
+        ).catch(console.error);
+      }
 
       if (userId) {
         dbUpdateConversationGuest(sessionId, userId, lang)
@@ -499,6 +526,7 @@ wss.on('connection', (ws) => {
 
     // ── STREAMED AUDIO CHUNK (continuous, ~100-250ms of raw PCM) ────────────
     if (type === 'audio_stream_chunk') {
+      if (!AI_TRANSLATION_ENABLED) return; // WebRTC call bypasses this path entirely
       const { sessionId, role, audioBase64, mimeType } = message;
       const session = sessions.get(sessionId);
 
@@ -506,6 +534,17 @@ wss.on('connection', (ws) => {
       if (!session.host || !session.guest) return; // not fully connected yet — drop silently
 
       feedAudioChunk(sessionId, role, audioBase64, mimeType);
+      return;
+    }
+
+    // ── WEBRTC SIGNALING (pure relay — server never touches the audio) ──────
+    if (type === 'webrtc_offer' || type === 'webrtc_answer' || type === 'webrtc_ice_candidate' || type === 'webrtc_ready') {
+      const { sessionId, role } = message;
+      const session = sessions.get(sessionId);
+      if (!session) { console.log(`[webrtc] ${type} from ${role}: no session ${sessionId}`); return; }
+      const partnerSocket = getPartnerSocket(session, role);
+      console.log(`[webrtc] ${type} from ${role} in ${sessionId}: partner socket ${partnerSocket ? 'found' : 'MISSING'}`);
+      if (partnerSocket) send(partnerSocket, message);
       return;
     }
 

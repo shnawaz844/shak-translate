@@ -7,13 +7,14 @@ import {
   ScrollView,
   Platform,
   ActivityIndicator,
-  Alert,
   PanResponder,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { useUser, useAuth } from '@clerk/clerk-expo';
 import type { Gender } from '../utils/voiceProfile';
+import { API_URL } from '../config';
+import { Alert } from '../utils/alertCompat';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -93,27 +94,25 @@ export function OnboardingScreen({ onComplete }: OnboardingScreenProps) {
     try {
       setLoading(true);
 
-      // Get Clerk session token to authenticate the backend call
-      const token = await getToken();
-      if (!token) throw new Error('No auth token');
+      // unsafeMetadata is writable directly by the signed-in user, so this
+      // doesn't depend on the backend having a Clerk secret key configured.
+      await user.update({ unsafeMetadata: { age, gender, onboardingComplete: true } });
 
-      // Call our backend endpoint that sets Clerk publicMetadata
-      const response = await fetch('https://shaktranslate-backend-32126898120.us-central1.run.app/clerk/update-profile', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        body: JSON.stringify({ age, gender }),
-      });
-
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body?.error ?? `Server error ${response.status}`);
+      // Best-effort sync to backend/publicMetadata for server-side use
+      // (e.g. if CLERK_SECRET_KEY is configured); failure here is non-fatal.
+      try {
+        const token = await getToken();
+        if (token) {
+          await fetch(`${API_URL}/clerk/update-profile`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ age, gender }),
+          });
+        }
+      } catch (syncErr: any) {
+        console.warn('[Onboarding] Backend profile sync failed (non-fatal):', syncErr?.message);
       }
 
-      // Reload user so publicMetadata is fresh in client
-      await user.reload();
       onComplete();
     } catch (err: any) {
       Alert.alert('Error', err?.message ?? 'Something went wrong. Please try again.');

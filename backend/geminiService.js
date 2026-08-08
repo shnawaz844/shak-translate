@@ -104,6 +104,11 @@ class LiveTranslationSession {
     // Input (the speaker's raw audio) accumulated for the in-flight turn,
     // so it can be persisted alongside the translation once the turn ends.
     this.inputAudioBuffers = [];
+    // Latency-diagnostic bookkeeping for the in-flight turn (see feedAudio/_onMessage).
+    this.turnId = null;
+    this.turnFirstChunkAt = null;
+    this.turnLastChunkAt = null;
+    this.turnMaxGapMs = 0;
   }
 
   _buildVoiceName() {
@@ -174,8 +179,13 @@ TRANSLATION RULES:
         // Gemini cancelled its own in-flight generation (e.g. it detected
         // the speaker resumed talking). Drop whatever we'd buffered for
         // this turn rather than finalizing/persisting a truncated reply.
+        // Callers still need to know a turn ended here — otherwise
+        // turnActive/partnerSpeaking state gets stuck on forever, since
+        // onTurnComplete never fires for an interrupted turn.
         console.log(`[LiveTranslationSession] Turn interrupted (${this.inputLang}→${this.outputLang})`);
+        const interruptedTurnId = this.turnId;
         this._resetTurnState();
+        if (this.callbacks.onInterrupted) this.callbacks.onInterrupted({ turnId: interruptedTurnId });
         return;
       }
 
@@ -188,6 +198,19 @@ TRANSLATION RULES:
             const pcmBuffer = Buffer.from(part.inlineData.data, 'base64');
             this.outputAudioBuffers.push(pcmBuffer);
 
+            const now = Date.now();
+            if (this.audioChunkIndex === 0) {
+              this.turnId = `${now}-${Math.random().toString(36).slice(2, 7)}`;
+              this.turnFirstChunkAt = now;
+              this.turnMaxGapMs = 0;
+              const sinceLastFeedMs = this.lastFeedAudioAt ? now - this.lastFeedAudioAt : null;
+              console.log(`[LATENCY][server] Turn ${this.turnId} (${this.inputLang}->${this.outputLang}): first Gemini audio chunk, ${sinceLastFeedMs}ms since last input chunk fed`);
+            } else if (this.turnLastChunkAt) {
+              const gap = now - this.turnLastChunkAt;
+              if (gap > this.turnMaxGapMs) this.turnMaxGapMs = gap;
+            }
+            this.turnLastChunkAt = now;
+
             // Stream this piece to the partner immediately — don't wait
             // for turnComplete. This is what actually removes the
             // "wait for the whole reply" latency.
@@ -197,6 +220,7 @@ TRANSLATION RULES:
                 audioBase64: wav.toString('base64'),
                 index: this.audioChunkIndex++,
                 text: this.fullTranslationText.trim(),
+                turnId: this.turnId,
               });
             }
           }
@@ -235,12 +259,18 @@ TRANSLATION RULES:
           ).toString('base64');
         }
 
+        if (this.turnId) {
+          const streamDurationMs = this.turnFirstChunkAt ? Date.now() - this.turnFirstChunkAt : null;
+          console.log(`[LATENCY][server] Turn ${this.turnId} (${this.inputLang}->${this.outputLang}): complete. chunks=${this.audioChunkIndex}, streamDurationMs=${streamDurationMs}, maxInterChunkGapMs=${this.turnMaxGapMs}`);
+        }
+
         if (this.callbacks.onTurnComplete) {
           this.callbacks.onTurnComplete({
             originalText: this.fullOriginalText.trim(),
             translatedText: this.fullTranslationText.trim(),
             translatedAudioBase64,
             originalAudioBase64,
+            turnId: this.turnId,
           });
         }
 
@@ -301,6 +331,7 @@ TRANSLATION RULES:
    */
   async feedAudio(audioBase64, mimeType) {
     this.inputAudioBuffers.push(Buffer.from(audioBase64, 'base64'));
+    this.lastFeedAudioAt = Date.now();
 
     await this.ensureConnected();
 

@@ -1,7 +1,11 @@
 // Central config
-export const WS_URL = 'wss://shaktranslate-backend-32126898120.us-central1.run.app';
+// TEMP: pointed at local backend for latency diagnostics. Revert to
+// 'wss://shaktranslate-backend-32126898120.us-central1.run.app' afterward.
+export const WS_URL = 'wss://level-guacamole-spree.ngrok-free.dev';
 
-// Example for local testing: export const WS_URL = 'ws://192.168.1.100:8080';
+// HTTP equivalent of WS_URL, for plain REST calls (e.g. /clerk/update-profile).
+// Derived from WS_URL so both always point at the same backend.
+export const API_URL = WS_URL.replace(/^ws/, 'http');
 
 export const LANGUAGES = [
   { code: 'en-US', name: 'English' },

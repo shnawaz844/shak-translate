@@ -22,6 +22,7 @@ export interface TranslatedAudioChunkPayload {
   mimeType: string;
   index: number;
   text: string;
+  turnId?: string;
 }
 
 interface WebSocketContextType {
@@ -44,6 +45,10 @@ interface WebSocketContextType {
   claimTurn: (role: string, sid: string, confidence?: number) => void;
   releaseTurn: (role: string, sid: string) => void;
   endSession: (role: string, sid: string) => void;
+  sendWebRTCOffer: (sdp: any, role: string, sid: string) => void;
+  sendWebRTCAnswer: (sdp: any, role: string, sid: string) => void;
+  sendWebRTCIceCandidate: (candidate: any, role: string, sid: string) => void;
+  sendWebRTCReady: (role: string, sid: string) => void;
   registerCallbacks: (id: string, callbacks: WebSocketCallbacks) => void;
   unregisterCallbacks: (id: string) => void;
 }
@@ -60,6 +65,10 @@ interface WebSocketCallbacks {
   onLockReleased?: () => void;
   onQueueResumed?: () => void;
   onSessionReadyEvent?: (partnerLang: string) => void;
+  onWebRTCOffer?: (sdp: any) => void;
+  onWebRTCAnswer?: (sdp: any) => void;
+  onWebRTCIceCandidate?: (candidate: any) => void;
+  onWebRTCReady?: () => void;
 }
 
 const WebSocketContext = createContext<WebSocketContextType | null>(null);
@@ -101,6 +110,7 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     if (type === 'processing_started') {
       setIsProcessing(true);
+      console.log(`[LATENCY][client] processing_started received (turnId=${message.turnId}) at ${Date.now()}`);
     }
 
     if (type === 'processing_done') {
@@ -124,15 +134,18 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
 
       if (type === 'translated_audio_chunk') {
+        console.log(`[LATENCY][client] translated_audio_chunk idx=${message.index} turnId=${message.turnId} received at ${Date.now()}`);
         callbacks.onTranslatedAudioChunk?.({
           audioBase64: message.audioBase64,
           mimeType: message.mimeType,
           index: message.index,
           text: message.text,
+          turnId: message.turnId,
         });
       }
 
       if (type === 'translated_audio_final') {
+        console.log(`[LATENCY][client] translated_audio_final turnId=${message.turnId} received at ${Date.now()}`);
         callbacks.onTranslatedAudioFinal?.(message.originalText, message.translatedText);
       }
 
@@ -146,6 +159,7 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
 
       if (type === 'partner_speaking') {
+        console.log(`[LATENCY][client] partner_speaking received (turnId=${message.turnId}) at ${Date.now()}`);
         callbacks.onPartnerSpeaking?.();
       }
 
@@ -164,6 +178,22 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (type === 'error') {
         setIsProcessing(false);
         callbacks.onError?.(message.message);
+      }
+
+      if (type === 'webrtc_offer') {
+        callbacks.onWebRTCOffer?.(message.sdp);
+      }
+
+      if (type === 'webrtc_answer') {
+        callbacks.onWebRTCAnswer?.(message.sdp);
+      }
+
+      if (type === 'webrtc_ice_candidate') {
+        callbacks.onWebRTCIceCandidate?.(message.candidate);
+      }
+
+      if (type === 'webrtc_ready') {
+        callbacks.onWebRTCReady?.();
       }
     });
   }, []);
@@ -247,6 +277,22 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     websocketService.send({ type: 'release_turn', sessionId: sid, role });
   }, []);
 
+  const sendWebRTCOffer = useCallback((sdp: any, role: string, sid: string) => {
+    websocketService.send({ type: 'webrtc_offer', sdp, role, sessionId: sid });
+  }, []);
+
+  const sendWebRTCAnswer = useCallback((sdp: any, role: string, sid: string) => {
+    websocketService.send({ type: 'webrtc_answer', sdp, role, sessionId: sid });
+  }, []);
+
+  const sendWebRTCIceCandidate = useCallback((candidate: any, role: string, sid: string) => {
+    websocketService.send({ type: 'webrtc_ice_candidate', candidate, role, sessionId: sid });
+  }, []);
+
+  const sendWebRTCReady = useCallback((role: string, sid: string) => {
+    websocketService.send({ type: 'webrtc_ready', role, sessionId: sid });
+  }, []);
+
   const endSession = useCallback((role: string, sid: string) => {
     websocketService.send({ type: 'end_session', sessionId: sid, role });
     websocketService.disconnect();
@@ -281,6 +327,10 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         claimTurn,
         releaseTurn,
         endSession,
+        sendWebRTCOffer,
+        sendWebRTCAnswer,
+        sendWebRTCIceCandidate,
+        sendWebRTCReady,
         registerCallbacks,
         unregisterCallbacks,
       }}
