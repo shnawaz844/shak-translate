@@ -14,24 +14,43 @@ import { Feather } from '@expo/vector-icons';
 import { useUser } from '@clerk/clerk-expo';
 import { Alert } from '../utils/alertCompat';
 import * as ImagePicker from 'expo-image-picker';
+import { LanguageSelector } from '../components/LanguageSelector';
+import type { Gender } from './OnboardingScreen';
 
 interface ProfileScreenProps {
   onBack: () => void;
 }
 
+const GENDER_OPTIONS: { value: Gender; label: string }[] = [
+  { value: 'female', label: 'Female' },
+  { value: 'male', label: 'Male' },
+  { value: 'neutral', label: 'Prefer not to say' },
+];
+
 export function ProfileScreen({ onBack }: ProfileScreenProps) {
   const { user } = useUser();
+  const meta = user?.unsafeMetadata as any;
   const [firstName, setFirstName] = useState(user?.firstName || '');
   const [lastName, setLastName] = useState(user?.lastName || '');
+  const [gender, setGender] = useState<Gender>(meta?.gender || 'neutral');
+  const [age, setAge] = useState(String(meta?.age ?? ''));
+  const [nativeLanguage, setNativeLanguage] = useState<string>(meta?.nativeLanguage || 'English');
   const [isUpdating, setIsUpdating] = useState(false);
 
   const handleUpdateProfile = async () => {
     if (!user) return;
+    const parsedAge = parseInt(age, 10);
     try {
       setIsUpdating(true);
+      await user.update({ firstName, lastName });
       await user.update({
-        firstName,
-        lastName,
+        unsafeMetadata: {
+          ...(user.unsafeMetadata as object),
+          gender,
+          age: Number.isFinite(parsedAge) ? parsedAge : meta?.age,
+          nativeLanguage,
+          onboardingComplete: true,
+        },
       });
       Alert.alert('Success', 'Profile updated successfully!');
     } catch (err: any) {
@@ -129,6 +148,50 @@ export function ProfileScreen({ onBack }: ProfileScreenProps) {
             </View>
           </View>
 
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>AGE</Text>
+            <View style={styles.inputContainer}>
+              <TextInput
+                style={styles.input}
+                value={age}
+                onChangeText={(v) => setAge(v.replace(/[^0-9]/g, ''))}
+                placeholder="Enter your age"
+                placeholderTextColor="rgba(255,255,255,0.2)"
+                keyboardType="number-pad"
+                maxLength={3}
+              />
+            </View>
+          </View>
+
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>GENDER</Text>
+            <View style={styles.pillRow}>
+              {GENDER_OPTIONS.map((opt) => {
+                const active = gender === opt.value;
+                return (
+                  <TouchableOpacity
+                    key={opt.value}
+                    style={[styles.pill, active && styles.pillActive]}
+                    onPress={() => setGender(opt.value)}
+                    activeOpacity={0.75}
+                  >
+                    <Text style={[styles.pillText, active && styles.pillTextActive]}>
+                      {opt.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>NATIVE LANGUAGE</Text>
+            <Text style={styles.hint}>
+              Used as your default language on the home screen until you pick a different one there.
+            </Text>
+            <LanguageSelector label="" selected={nativeLanguage} onSelect={setNativeLanguage} />
+          </View>
+
           <TouchableOpacity
             style={[styles.saveBtn, isUpdating && styles.saveBtnDisabled]}
             onPress={handleUpdateProfile}
@@ -199,6 +262,23 @@ const styles = StyleSheet.create({
     borderRadius: 16, paddingHorizontal: 16, height: 56, justifyContent: 'center',
   },
   input: { color: '#fff', fontSize: 16 },
+  hint: {
+    color: 'rgba(255,255,255,0.25)', fontSize: 11, lineHeight: 15, marginTop: -4,
+  },
+  pillRow: { flexDirection: 'row', gap: 10 },
+  pill: {
+    flex: 1, alignItems: 'center', paddingVertical: 14, borderRadius: 14,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)',
+  },
+  pillActive: {
+    backgroundColor: 'rgba(57,255,20,0.1)',
+    borderColor: '#39FF14',
+  },
+  pillText: {
+    color: 'rgba(255,255,255,0.4)', fontSize: 12, fontWeight: '600', textAlign: 'center',
+  },
+  pillTextActive: { color: '#39FF14' },
   saveBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     backgroundColor: '#39FF14', borderRadius: 16, height: 56,

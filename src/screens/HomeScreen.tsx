@@ -49,15 +49,26 @@ interface RecentConversation {
 export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, onOpenRecordings }: HomeScreenProps) {
   const { signOut } = useAuth();
   const { user } = useUser();
+  // Voice profile from Clerk metadata — used for Gemini voice warm-up at session start
+  const meta = user?.unsafeMetadata as any;
+  const speakerGender: string | undefined = meta?.gender;
+  const speakerAge: number | undefined = meta?.age !== undefined ? Number(meta.age) : undefined;
+  const nativeLanguage: string | undefined = meta?.nativeLanguage;
+
   const [myLang, setMyLang] = useState('English');
 
-  // Persist the user's chosen language so it survives session end / remounts
+  // Default to the user's native language (set in their profile) until they
+  // explicitly pick a different language here — an explicit pick, once made,
+  // persists and always wins over the native-language default afterward.
   const MY_LANG_KEY = 'shak_my_language';
   useEffect(() => {
     storage.getItem(MY_LANG_KEY)
-      .then(saved => { if (saved) setMyLang(saved); })
+      .then(saved => {
+        if (saved) setMyLang(saved);
+        else if (nativeLanguage) setMyLang(nativeLanguage);
+      })
       .catch(() => {});
-  }, []);
+  }, [nativeLanguage]);
 
   const handleSetMyLang = (lang: string) => {
     setMyLang(lang);
@@ -71,10 +82,6 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
   const [loadingConvs, setLoadingConvs] = useState(false);
   const roleRef = useRef<'host' | 'guest' | null>(null);
   const userId = user?.id;
-  // Voice profile from Clerk metadata — used for Gemini voice warm-up at session start
-  const meta = user?.unsafeMetadata as any;
-  const speakerGender: string | undefined = meta?.gender;
-  const speakerAge: number | undefined = meta?.age !== undefined ? Number(meta.age) : undefined;
 
   // Helper to format timestamps
   const timeAgo = (dateStr: string) => {

@@ -112,28 +112,41 @@ class LiveTranslationSession {
   }
 
   _buildVoiceName() {
-    const { gender, age } = this.voiceProfile;
-    // Gemini Live API prebuilt voices:
-    // Female: 'Aoede', 'Kore'
-    // Male: 'Puck', 'Charon', 'Fenrir'
-    // Google doesn't publish an "age" characteristic per voice name, so this
-    // younger/older split is a best-effort guess, not a verified mapping —
-    // swap the pairs below if it turns out backwards once you've heard both.
-    const isYounger = typeof age === 'number' && age < 30;
-    if (gender === 'male') return isYounger ? 'Puck' : 'Charon';
-    if (gender === 'female') return isYounger ? 'Aoede' : 'Kore';
+    const { gender } = this.voiceProfile;
+    // Gemini Live API prebuilt voices are discrete IDs, not a pitch/age
+    // continuum, and Google doesn't publish per-voice age characteristics —
+    // so gender picks the voice ID, and age instead shapes delivery via the
+    // system prompt (see _buildAgeInstruction), which native-audio models
+    // can actually act on since they synthesize speech generatively rather
+    // than picking from a fixed recorded bank.
+    if (gender === 'male') return 'Puck';
+    if (gender === 'female') return 'Aoede';
     return 'Aoede'; // neutral fallback
+  }
+
+  _buildAgeInstruction() {
+    const { age } = this.voiceProfile;
+    if (typeof age !== 'number') return '';
+    let bracket;
+    if (age < 13) bracket = 'young child';
+    else if (age < 18) bracket = 'teenager';
+    else if (age < 30) bracket = 'young adult in their twenties';
+    else if (age < 45) bracket = 'adult in their thirties or early forties';
+    else if (age < 60) bracket = 'middle-aged adult in their forties or fifties';
+    else bracket = 'senior adult over sixty';
+    return ` Your spoken delivery should match the natural pitch, cadence, and energy of a ${bracket} — do not change the translated words themselves, only how they sound.`;
   }
 
   _buildConfig() {
     const voiceName = this._buildVoiceName();
+    const ageInstruction = this._buildAgeInstruction();
 
     return {
       model: 'gemini-live-2.5-flash-native-audio',
       config: {
         systemInstruction: {
           parts: [{
-            text: `You are a translation pipe, not a conversational participant. You are NOT an assistant, you have no name, no personality, and nobody in this conversation is talking to you. Audio comes in from a speaker who is expected to speak ${this.inputLang}; you output the exact same content spoken in ${this.outputLang}, ALWAYS, no exceptions. That is the entire job — nothing else ever happens.
+            text: `You are a translation pipe, not a conversational participant. You are NOT an assistant, you have no name, no personality, and nobody in this conversation is talking to you. Audio comes in from a speaker who is expected to speak ${this.inputLang}; you output the exact same content spoken in ${this.outputLang}, ALWAYS, no exceptions. That is the entire job — nothing else ever happens.${ageInstruction}
 
 ABSOLUTE RULES — breaking any of these means you have failed the task:
 1. Your output language is ALWAYS ${this.outputLang} — never anything else, under any circumstance. If the speaker's actual audio turns out to be in a different language than ${this.inputLang} (people sometimes speak a different language than expected), that changes nothing: still render it in ${this.outputLang}, never in the language you actually heard and never in ${this.inputLang} either. The listener only understands ${this.outputLang} — outputting any other language is useless to them and a critical failure.

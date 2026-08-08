@@ -12,11 +12,12 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { useUser, useAuth } from '@clerk/clerk-expo';
-import type { Gender } from '../utils/voiceProfile';
 import { API_URL } from '../config';
 import { Alert } from '../utils/alertCompat';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
+
+export type Gender = 'male' | 'female' | 'neutral';
 
 const MIN_AGE = 10;
 const MAX_AGE = 90;
