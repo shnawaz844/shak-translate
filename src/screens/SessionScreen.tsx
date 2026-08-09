@@ -71,11 +71,32 @@ export function SessionScreen({
   // at all, which avoids the conflict.
   const webPlaybackCtxRef = useRef<AudioContext | null>(null);
   const webPlaybackStateRef = useRef<{ source: AudioBufferSourceNode } | null>(null);
+  // AudioContext-clock cursor for gapless playback: each chunk is scheduled
+  // to start exactly when the previous one ends, rather than waiting for the
+  // previous chunk to actually finish playing before even starting to decode
+  // the next one. That old sequential await-then-decode pattern inserted a
+  // real, audible silence between every chunk of the same sentence — decode
+  // time isn't free, so there was always a small gap where nothing played
+  // even though the next chunk had already arrived. A real call never does
+  // that. Chunks are now pipelined: decode happens as soon as a chunk is
+  // dequeued, and playback is scheduled on the AudioContext's own clock, so
+  // consecutive chunks butt up against each other with zero gap regardless
+  // of how long decoding takes.
+  const nextStartTimeRef = useRef(0);
+  const pendingSourcesRef = useRef(0);
+  // Shared compressor so loudness is consistent across chunks/turns instead
+  // of each independently-generated chunk playing at its own volume — the
+  // same kind of leveling a real phone call's audio path applies.
+  const webCompressorRef = useRef<DynamicsCompressorNode | null>(null);
 
   const getWebPlaybackContext = useCallback((): AudioContext => {
     if (!webPlaybackCtxRef.current) {
       const Ctor: typeof AudioContext = (window as any).AudioContext || (window as any).webkitAudioContext;
-      webPlaybackCtxRef.current = new Ctor();
+      const ctx = new Ctor();
+      webPlaybackCtxRef.current = ctx;
+      const compressor = ctx.createDynamicsCompressor();
+      compressor.connect(ctx.destination);
+      webCompressorRef.current = compressor;
     }
     return webPlaybackCtxRef.current;
   }, []);
@@ -93,6 +114,14 @@ export function SessionScreen({
     isPlayingQueueRef.current = true;
     setIsPlayingAudio(true);
 
+    if (Platform.OS === 'web') {
+      const ctx = getWebPlaybackContext();
+      if (ctx.state === 'suspended') await ctx.resume();
+      // If playback has fully drained since the last chunk (cursor is in the
+      // past), restart the schedule from "now" instead of from a stale time.
+      if (nextStartTimeRef.current < ctx.currentTime) nextStartTimeRef.current = ctx.currentTime;
+    }
+
     while (audioQueueRef.current.length > 0) {
       audioQueueRef.current.sort((a, b) => a.index - b.index);
       const chunk = audioQueueRef.current.shift();
@@ -109,23 +138,35 @@ export function SessionScreen({
       if (Platform.OS === 'web') {
         try {
           const ctx = getWebPlaybackContext();
-          if (ctx.state === 'suspended') await ctx.resume();
           const audioBuffer = await ctx.decodeAudioData(base64ToArrayBuffer(chunk.base64));
 
-          await new Promise<void>((resolve) => {
-            const source = ctx.createBufferSource();
-            source.buffer = audioBuffer;
-            source.connect(ctx.destination);
-            source.onended = () => {
-              if (webPlaybackStateRef.current?.source === source) webPlaybackStateRef.current = null;
-              resolve();
-            };
-            webPlaybackStateRef.current = { source };
-            source.start(0);
-          });
+          const source = ctx.createBufferSource();
+          source.buffer = audioBuffer;
+          // A brief gain ramp at each chunk's edges avoids an audible click
+          // where one independently-generated chunk's waveform doesn't quite
+          // meet the next one at zero amplitude.
+          const fadeGain = ctx.createGain();
+          const FADE_S = 0.004;
+          const startAt = Math.max(nextStartTimeRef.current, ctx.currentTime);
+          const endAt = startAt + audioBuffer.duration;
+          fadeGain.gain.setValueAtTime(0, startAt);
+          fadeGain.gain.linearRampToValueAtTime(1, startAt + FADE_S);
+          fadeGain.gain.setValueAtTime(1, Math.max(startAt + FADE_S, endAt - FADE_S));
+          fadeGain.gain.linearRampToValueAtTime(0, endAt);
+          source.connect(fadeGain);
+          fadeGain.connect(webCompressorRef.current ?? ctx.destination);
+
+          pendingSourcesRef.current += 1;
+          source.onended = () => {
+            pendingSourcesRef.current = Math.max(0, pendingSourcesRef.current - 1);
+            if (webPlaybackStateRef.current?.source === source) webPlaybackStateRef.current = null;
+            if (pendingSourcesRef.current === 0) setIsPlayingAudio(false);
+          };
+          webPlaybackStateRef.current = { source };
+          source.start(startAt);
+          nextStartTimeRef.current = endAt;
         } catch (e) {
           console.error('[SessionScreen] Web playback error:', e);
-          webPlaybackStateRef.current = null;
         }
       } else {
         try {
@@ -151,7 +192,12 @@ export function SessionScreen({
       }
     }
 
-    setIsPlayingAudio(false);
+    // On web, chunks are scheduled ahead on the AudioContext clock rather
+    // than awaited to completion above, so playback continues after this
+    // loop exits — isPlayingAudio is cleared from the last source's onended
+    // instead (see pendingSourcesRef). Native's expo-audio path still awaits
+    // each chunk to actual completion, so clearing it here is correct there.
+    if (Platform.OS !== 'web') setIsPlayingAudio(false);
     isPlayingQueueRef.current = false;
   }, [getWebPlaybackContext]);
 
