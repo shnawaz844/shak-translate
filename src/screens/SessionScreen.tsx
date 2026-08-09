@@ -53,7 +53,6 @@ export function SessionScreen({
   const audioQueueRef = useRef<{ base64: string; index: number; text: string }[]>([]);
   const isPlayingQueueRef = useRef(false);
   const currentSoundRef = useRef<AudioPlayer | null>(null); // native only
-  const isBargedInRef = useRef(false); // true while partner is speaking (barge-in paused)
 
   // Audio mode (mic + speaker routing) is configured once by useAudioRecorder
   // itself when streaming starts — see src/hooks/useAudioRecorder.ts. Keeping
@@ -71,14 +70,7 @@ export function SessionScreen({
   // Web Audio buffer playback doesn't touch the <audio> element code path
   // at all, which avoids the conflict.
   const webPlaybackCtxRef = useRef<AudioContext | null>(null);
-  const webPlaybackStateRef = useRef<{
-    buffer: AudioBuffer;
-    source: AudioBufferSourceNode | null; // null while paused
-    startedAtCtxTime: number;
-    offsetSec: number;
-    resolve: () => void;
-  } | null>(null);
-  const webIntentionalStopRef = useRef(false);
+  const webPlaybackStateRef = useRef<{ source: AudioBufferSourceNode } | null>(null);
 
   const getWebPlaybackContext = useCallback((): AudioContext => {
     if (!webPlaybackCtxRef.current) {
@@ -86,40 +78,6 @@ export function SessionScreen({
       webPlaybackCtxRef.current = new Ctor();
     }
     return webPlaybackCtxRef.current;
-  }, []);
-
-  const webPausePlayback = useCallback(() => {
-    const state = webPlaybackStateRef.current;
-    const ctx = webPlaybackCtxRef.current;
-    if (!state || !state.source || !ctx) return;
-    const elapsed = ctx.currentTime - state.startedAtCtxTime;
-    webIntentionalStopRef.current = true;
-    try { state.source.stop(); } catch (_) {}
-    webPlaybackStateRef.current = { ...state, source: null, offsetSec: state.offsetSec + elapsed };
-  }, []);
-
-  const webResumePlayback = useCallback(() => {
-    const state = webPlaybackStateRef.current;
-    const ctx = webPlaybackCtxRef.current;
-    if (!state || state.source || !ctx) return; // already playing, or nothing paused
-    if (state.offsetSec >= state.buffer.duration) {
-      webPlaybackStateRef.current = null;
-      state.resolve();
-      return;
-    }
-    const source = ctx.createBufferSource();
-    source.buffer = state.buffer;
-    source.connect(ctx.destination);
-    source.onended = () => {
-      if (webIntentionalStopRef.current) { webIntentionalStopRef.current = false; return; }
-      const cur = webPlaybackStateRef.current;
-      if (cur?.source === source) {
-        webPlaybackStateRef.current = null;
-        cur.resolve();
-      }
-    };
-    source.start(0, state.offsetSec);
-    webPlaybackStateRef.current = { ...state, source, startedAtCtxTime: ctx.currentTime };
   }, []);
 
   function base64ToArrayBuffer(base64: string): ArrayBuffer {
@@ -136,20 +94,15 @@ export function SessionScreen({
     setIsPlayingAudio(true);
 
     while (audioQueueRef.current.length > 0) {
-      // Wait while barged-in (user is speaking — sound is paused by handleBargeIn)
-      while (isBargedInRef.current) {
-        await new Promise(r => setTimeout(r, 80));
-      }
-
       audioQueueRef.current.sort((a, b) => a.index - b.index);
       const chunk = audioQueueRef.current.shift();
       if (!chunk) continue;
 
-      if (chunk.index === 0) {
-        setCurrentReceivedText(chunk.text);
-      } else {
-        setCurrentReceivedText((prev) => (prev ? prev + ' ' + chunk.text : chunk.text));
-      }
+      // chunk.text is the FULL accumulated translation for the turn so far
+      // (see geminiService.js's fullTranslationText), not just this chunk's
+      // new words — display it as-is rather than appending, which was
+      // duplicating the same growing text onto itself every chunk.
+      setCurrentReceivedText(chunk.text);
 
       if (!chunk.base64) continue;
 
@@ -164,14 +117,10 @@ export function SessionScreen({
             source.buffer = audioBuffer;
             source.connect(ctx.destination);
             source.onended = () => {
-              if (webIntentionalStopRef.current) { webIntentionalStopRef.current = false; return; }
-              const cur = webPlaybackStateRef.current;
-              if (cur?.source === source) {
-                webPlaybackStateRef.current = null;
-                resolve();
-              }
+              if (webPlaybackStateRef.current?.source === source) webPlaybackStateRef.current = null;
+              resolve();
             };
-            webPlaybackStateRef.current = { buffer: audioBuffer, source, startedAtCtxTime: ctx.currentTime, offsetSec: 0, resolve };
+            webPlaybackStateRef.current = { source };
             source.start(0);
           });
         } catch (e) {
@@ -206,7 +155,7 @@ export function SessionScreen({
     isPlayingQueueRef.current = false;
   }, [getWebPlaybackContext]);
 
-  const { status, isProcessing, sendAudioStreamChunk, sendPauseQueue, sendResumeQueue, endSession } = useWebSocket({
+  const { status, isProcessing, sendAudioStreamChunk, endSession } = useWebSocket({
     onTranslatedAudioChunk: useCallback((payload: any) => {
       setPartnerSpeaking(false);
       if (!payload.audioBase64 && !payload.text?.trim()) return;
@@ -241,49 +190,7 @@ export function SessionScreen({
     onPartnerSpeaking: useCallback(() => { setPartnerSpeaking(true); }, []),
     onLockReleased: useCallback(() => { setPartnerSpeaking(false); }, []),
     onTurnRejected: useCallback(() => {}, []),
-
-    // Server confirmed queue resumed — unpause local loop and resume sound
-    onQueueResumed: useCallback(() => {
-      isBargedInRef.current = false;
-      if (Platform.OS === 'web') {
-        webResumePlayback();
-      } else if (currentSoundRef.current) {
-        try { currentSoundRef.current.play(); } catch (_) {}
-      }
-    }, [webResumePlayback]),
   });
-
-  const isBargeInDebounceRef = useRef(false);
-  const partnerRole = role === 'host' ? 'guest' : 'host';
-
-  // Called when VAD detects local speech during partner playback — pause, don't cancel
-  const handleBargeIn = useCallback(async () => {
-    if (isBargeInDebounceRef.current) return;
-    isBargeInDebounceRef.current = true;
-    setTimeout(() => { isBargeInDebounceRef.current = false; }, 300);
-
-    if (!isPlayingAudio && !partnerSpeaking) return;
-
-    isBargedInRef.current = true;
-
-    // Pause the currently playing sound at its exact position
-    if (Platform.OS === 'web') {
-      webPausePlayback();
-    } else if (currentSoundRef.current) {
-      try { currentSoundRef.current.pause(); } catch (_) {}
-    }
-
-    // Tell server to pause the partner's drain loop (keeps queue intact)
-    sendPauseQueue(partnerRole, sessionId);
-  }, [isPlayingAudio, partnerSpeaking, partnerRole, sessionId, sendPauseQueue, webPausePlayback]);
-
-  // Called when local speech silence is detected after a barge-in — resume partner
-  const handleBargeInRelease = useCallback(() => {
-    if (!isBargedInRef.current) return;
-    // Tell server to resume draining — it will send queue_resumed when ready
-    sendResumeQueue(partnerRole, sessionId);
-    // Note: isBargedInRef.current is cleared in onQueueResumed callback
-  }, [partnerRole, sessionId, sendResumeQueue]);
 
   // Continuous streaming: no more per-sentence stop/start. The mic stays live
   // for the whole call on both platforms — real full duplex now relies on the
@@ -304,19 +211,50 @@ export function SessionScreen({
     if (micError) setHasError(true);
   }, [micError]);
 
-  // Drive barge-in off isSpeaking transitions instead of VAD event callbacks —
-  // turn-boundary detection now lives server-side in Gemini's own
-  // automaticActivityDetection, this local signal is UI-only.
-  const wasSpeakingRef = useRef(false);
-  useEffect(() => {
-    if (isSpeaking && !wasSpeakingRef.current) {
-      if (isPlayingAudio || partnerSpeaking) handleBargeIn();
-    } else if (!isSpeaking && wasSpeakingRef.current) {
-      handleBargeInRelease();
-    }
-    wasSpeakingRef.current = isSpeaking;
-  }, [isSpeaking, isPlayingAudio, partnerSpeaking, handleBargeIn, handleBargeInRelease]);
+  // NOTE: this used to auto-pause partner playback the instant the local
+  // energy-based VAD saw any sound while listening (barge-in). That meant
+  // recording and playback could never truly run in parallel like a real
+  // call: any ambient noise (a TV, loud background sound) or the speaker
+  // just resuming their next sentence would stop playback and wait, instead
+  // of letting both directions run independently and simultaneously, which
+  // is what they're actually designed to do — each direction is already its
+  // own independent Gemini session (see geminiService.js). Removed entirely;
+  // recording and playback no longer affect each other at all.
 
+  // Keep the screen awake for the whole call — this is a hands-free calling
+  // screen, and the mic's own speech detection stops working the moment the
+  // OS suspends the tab/screen on an idle timeout. Wake locks are also
+  // automatically released by the browser when the tab is hidden (e.g. the
+  // user briefly switches apps), so re-acquire on visibility change too.
+  const wakeLockRef = useRef<any>(null);
+  useEffect(() => {
+    if (Platform.OS !== 'web' || typeof navigator === 'undefined' || !('wakeLock' in navigator)) return;
+
+    const acquire = async () => {
+      try {
+        wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+      } catch (e) {
+        console.warn('[SessionScreen] Wake lock request failed:', e);
+      }
+    };
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && status === 'connected' && !wakeLockRef.current) {
+        acquire();
+      }
+    };
+
+    if (status === 'connected') acquire();
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      if (wakeLockRef.current) {
+        wakeLockRef.current.release().catch(() => {});
+        wakeLockRef.current = null;
+      }
+    };
+  }, [status]);
 
   // ── Pulse animation ─────────────────────────────────────────────────────────
   const pulseAnim = useSharedValue(1);
@@ -438,10 +376,6 @@ export function SessionScreen({
               <Feather name="volume-2" size={16} color="#39FF14" />
               <Text style={styles.processingLabel}>PLAYING...</Text>
             </View>
-            <TouchableOpacity onPress={handleBargeIn} style={styles.interruptBtn}>
-              <Feather name="mic" size={12} color="rgba(57,255,20,0.6)" />
-              <Text style={styles.interruptText}>TAP OR SPEAK TO INTERRUPT</Text>
-            </TouchableOpacity>
           </View>
         )}
 
@@ -697,17 +631,5 @@ const styles = StyleSheet.create({
     color: 'rgba(255,200,0,0.7)', fontSize: 10,
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
     letterSpacing: 1.5,
-  },
-  interruptBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingVertical: 8, paddingHorizontal: 14,
-    borderRadius: 20, borderWidth: 1,
-    borderColor: 'rgba(57,255,20,0.2)',
-    alignSelf: 'center', marginTop: 4,
-  },
-  interruptText: {
-    color: 'rgba(57,255,20,0.5)', fontSize: 9,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-    letterSpacing: 2,
   },
 });
