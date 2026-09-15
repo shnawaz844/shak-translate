@@ -14,7 +14,7 @@ import { Feather } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Audio } from 'expo-av';
+import { createAudioPlayer, setAudioModeAsync, type AudioPlayer, type AudioStatus } from 'expo-audio';
 import Animated, { useAnimatedStyle, withTiming, useSharedValue, interpolateColor } from 'react-native-reanimated';
 import { WS_URL } from '../config';
 
@@ -107,8 +107,10 @@ export function AudioRecordingsScreen({
 
   const playlistRef = useRef<PlaylistEntry[]>([]);
   const currentIndexRef = useRef<number>(-1);
-  const currentSoundRef = useRef<Audio.Sound | null>(null);
-  const nextSoundRef = useRef<Audio.Sound | null>(null);
+  const currentSoundRef = useRef<AudioPlayer | null>(null);
+  const nextSoundRef = useRef<AudioPlayer | null>(null);
+  const currentSubRef = useRef<{ remove: () => void } | null>(null);
+  const nextSubRef = useRef<{ remove: () => void } | null>(null);
   const nextIndexRef = useRef<number>(-1);
   const listRef = useRef<FlatList>(null);
   const scrubberWidthRef = useRef(1);
@@ -117,12 +119,12 @@ export function AudioRecordingsScreen({
   const updatePositionIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    Audio.setAudioModeAsync({
-      allowsRecordingIOS: false,
-      playsInSilentModeIOS: true,
-      staysActiveInBackground: false,
-      shouldDuckAndroid: true,
-      playThroughEarpieceAndroid: false, // Keeping speaker for playback screen
+    setAudioModeAsync({
+      allowsRecording: false,
+      playsInSilentMode: true,
+      shouldPlayInBackground: false,
+      interruptionMode: 'duckOthers',
+      shouldRouteThroughEarpiece: false, // Keeping speaker for playback screen
     }).catch(() => {});
 
     return () => {
@@ -164,61 +166,82 @@ export function AudioRecordingsScreen({
 
   const stopPlayback = async () => {
     if (updatePositionIntervalRef.current) clearInterval(updatePositionIntervalRef.current);
+    if (currentSubRef.current) { currentSubRef.current.remove(); currentSubRef.current = null; }
     if (currentSoundRef.current) {
-      try {
-        await currentSoundRef.current.stopAsync();
-        await currentSoundRef.current.unloadAsync();
-      } catch (_) {}
+      try { currentSoundRef.current.pause(); currentSoundRef.current.remove(); } catch (_) {}
       currentSoundRef.current = null;
     }
+    if (nextSubRef.current) { nextSubRef.current.remove(); nextSubRef.current = null; }
     if (nextSoundRef.current) {
-      try {
-        await nextSoundRef.current.unloadAsync();
-      } catch (_) {}
+      try { nextSoundRef.current.remove(); } catch (_) {}
       nextSoundRef.current = null;
       nextIndexRef.current = -1;
     }
     setIsPlaying(false);
   };
 
-  const updateDuration = (entry: PlaylistEntry, status: any) => {
-    if (status.isLoaded && status.durationMillis) {
-      if (!entry.durationMs) {
-        entry.durationMs = status.durationMillis - entry.skipMs;
-        const total = playlistRef.current.reduce((acc, curr) => acc + (curr.durationMs || 0), 0);
-        setTotalDurationMs(total);
-      }
+  const updateDuration = (entry: PlaylistEntry, durationMs: number) => {
+    if (durationMs && !entry.durationMs) {
+      entry.durationMs = durationMs - entry.skipMs;
+      const total = playlistRef.current.reduce((acc, curr) => acc + (curr.durationMs || 0), 0);
+      setTotalDurationMs(total);
     }
   };
 
-  const setupSoundListeners = (sound: Audio.Sound, entry: PlaylistEntry, index: number) => {
-    sound.setOnPlaybackStatusUpdate(stat => {
+  const setupSoundListeners = (sound: AudioPlayer, entry: PlaylistEntry, index: number) => {
+    return sound.addListener('playbackStatusUpdate', (stat: AudioStatus) => {
       if (stat.isLoaded) {
         if (stat.didJustFinish) {
           playFrom(index + 1);
-        } else if (stat.isPlaying) {
+        } else if (stat.playing) {
           const prevDuration = playlistRef.current.slice(0, index).reduce((acc, curr) => acc + (curr.durationMs || 0), 0);
-          setPositionMs(prevDuration + (stat.positionMillis - entry.skipMs));
+          setPositionMs(prevDuration + (stat.currentTime * 1000 - entry.skipMs));
         }
       }
     });
   };
 
+  // Mirrors expo-av's old Audio.Sound.createAsync(uri, {shouldPlay, positionMillis}):
+  // waits for the player to finish loading, seeks to the entry's start offset,
+  // then optionally starts playback — all before resolving.
+  const createLoadedPlayer = (entry: PlaylistEntry, shouldPlay: boolean): Promise<{ player: AudioPlayer; sub: { remove: () => void }; durationMs: number }> => {
+    return new Promise((resolve, reject) => {
+      const player = createAudioPlayer({ uri: entry.url });
+      const sub = player.addListener('playbackStatusUpdate', (status: AudioStatus) => {
+        if (status.error) {
+          sub.remove();
+          reject(new Error(status.error));
+          return;
+        }
+        if (status.isLoaded && status.duration > 0) {
+          sub.remove();
+          (async () => {
+            try {
+              if (entry.skipMs > 0) await player.seekTo(entry.skipMs / 1000);
+              if (shouldPlay) player.play();
+              resolve({ player, sub, durationMs: status.duration * 1000 });
+            } catch (e) {
+              reject(e);
+            }
+          })();
+        }
+      });
+    });
+  };
+
   const preloadNext = async (index: number) => {
     if (index >= playlistRef.current.length) return;
+    if (nextSubRef.current) { nextSubRef.current.remove(); nextSubRef.current = null; }
     if (nextSoundRef.current) {
-      try { await nextSoundRef.current.unloadAsync(); } catch (_) {}
+      try { nextSoundRef.current.remove(); } catch (_) {}
       nextSoundRef.current = null;
     }
     const entry = playlistRef.current[index];
     nextIndexRef.current = index;
     try {
-      const { sound, status } = await Audio.Sound.createAsync(
-        { uri: entry.url },
-        { shouldPlay: false, positionMillis: entry.skipMs }
-      );
-      nextSoundRef.current = sound;
-      updateDuration(entry, status);
+      const { player, durationMs } = await createLoadedPlayer(entry, false);
+      nextSoundRef.current = player;
+      updateDuration(entry, durationMs);
     } catch (e) {
       console.warn('Preload error', e);
       nextIndexRef.current = -1;
@@ -244,18 +267,19 @@ export function AudioRecordingsScreen({
     }
 
     if (nextIndexRef.current === index && nextSoundRef.current) {
+      if (currentSubRef.current) { currentSubRef.current.remove(); currentSubRef.current = null; }
       if (currentSoundRef.current) {
-        try { await currentSoundRef.current.unloadAsync(); } catch (_) {}
+        try { currentSoundRef.current.remove(); } catch (_) {}
       }
       currentSoundRef.current = nextSoundRef.current;
       currentIndexRef.current = index;
       nextSoundRef.current = null;
       nextIndexRef.current = -1;
-      
+
       try {
-        await currentSoundRef.current.playAsync();
+        currentSoundRef.current.play();
         setIsPlaying(true);
-        setupSoundListeners(currentSoundRef.current, entry, index);
+        currentSubRef.current = setupSoundListeners(currentSoundRef.current, entry, index);
         preloadNext(index + 1);
       } catch (e) {
         console.warn('Preloaded playback error', e);
@@ -268,14 +292,11 @@ export function AudioRecordingsScreen({
     currentIndexRef.current = index;
 
     try {
-      const { sound, status } = await Audio.Sound.createAsync(
-        { uri: entry.url },
-        { shouldPlay: true, positionMillis: entry.skipMs }
-      );
-      currentSoundRef.current = sound;
+      const { player, durationMs } = await createLoadedPlayer(entry, true);
+      currentSoundRef.current = player;
       setIsPlaying(true);
-      updateDuration(entry, status);
-      setupSoundListeners(sound, entry, index);
+      updateDuration(entry, durationMs);
+      currentSubRef.current = setupSoundListeners(player, entry, index);
       preloadNext(index + 1);
     } catch (e) {
       console.warn('Playback error', e);
@@ -285,11 +306,11 @@ export function AudioRecordingsScreen({
 
   const handlePlayPause = () => {
     if (isPlaying) {
-      if (currentSoundRef.current) currentSoundRef.current.pauseAsync();
+      if (currentSoundRef.current) currentSoundRef.current.pause();
       setIsPlaying(false);
     } else {
       if (currentSoundRef.current) {
-        currentSoundRef.current.playAsync();
+        currentSoundRef.current.play();
         setIsPlaying(true);
       } else {
         // Start from beginning or current position
@@ -324,7 +345,7 @@ export function AudioRecordingsScreen({
         // Seek here
         const offsetWithinClip = targetMs - accumulatedMs;
         if (currentIndexRef.current === i && currentSoundRef.current) {
-           currentSoundRef.current.setPositionAsync(entry.skipMs + offsetWithinClip);
+           currentSoundRef.current.seekTo((entry.skipMs + offsetWithinClip) / 1000);
         } else {
            // We'd need to playFrom(i) and seek, but playFrom currently starts at skipMs.
            // Modifying playFrom to accept an offset is slightly complex, so we just restart the clip.
@@ -353,7 +374,7 @@ export function AudioRecordingsScreen({
 
   return (
     <View style={styles.container}>
-      <LinearGradient colors={['#0f172a', '#020617']} style={StyleSheet.absoluteFillObject} />
+      <LinearGradient colors={['#0f172a', '#020617']} style={StyleSheet.absoluteFill} />
       <SafeAreaView style={styles.safeArea}>
         {/* Header */}
         <View style={styles.header}>
