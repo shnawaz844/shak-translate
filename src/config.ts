@@ -1,7 +1,14 @@
 // Central config
-// TEMP: pointed at local backend for latency diagnostics. Revert to
-// 'wss://shaktranslate-backend-32126898120.us-central1.run.app' afterward.
-export const WS_URL = 'wss://level-guacamole-spree.ngrok-free.dev';
+// WS_URL/CLERK_PUBLISHABLE_KEY are read from the environment (EXPO_PUBLIC_*
+// vars are inlined at build time by Expo) so each EAS build profile
+// (development/preview/production in eas.json) actually points at its own
+// backend and Clerk instance, instead of every build silently shipping
+// whatever was last hardcoded here for local testing.
+const wsUrl = process.env.EXPO_PUBLIC_WS_URL;
+if (!wsUrl) {
+  throw new Error('Missing EXPO_PUBLIC_WS_URL in .env');
+}
+export const WS_URL = wsUrl;
 
 // HTTP equivalent of WS_URL, for plain REST calls (e.g. /clerk/update-profile).
 // Derived from WS_URL so both always point at the same backend.
