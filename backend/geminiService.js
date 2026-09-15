@@ -31,10 +31,87 @@ const ai = new GoogleGenAI({
   location,
 });
 
+// Overridable for A/B testing candidate models against the current one
+// without editing code each time — unset falls back to the model already
+// proven in production.
+const LIVE_MODEL = process.env.GEMINI_LIVE_MODEL || 'gemini-live-2.5-flash-native-audio';
+
 // Sample rate the client streams raw PCM at (must match src streaming recorder config).
 const INPUT_SAMPLE_RATE = 16000;
 // Sample rate Gemini Native Audio outputs.
 const OUTPUT_SAMPLE_RATE = 24000;
+
+// BCP-47 codes for the app's language picker (src/config.ts LANGUAGES) — used
+// only as a hint to Gemini's speech transcription (AudioTranscriptionConfig.
+// languageCodes), never to restrict which languages the app handles. Without
+// a hint, the model auto-detects the transcription's language/script per
+// utterance, which is what let the "original" transcript text occasionally
+// come back in the wrong script (e.g. Hindi speech rendered in Devanagari
+// even for an English-language session). Any language name not in this map
+// simply keeps the old auto-detect behavior — new languages don't need to be
+// added here to work, this only makes existing ones more accurate.
+const LANGUAGE_NAME_TO_BCP47 = {
+  English: 'en-US',
+  Hindi: 'hi-IN',
+  Mandarin: 'zh-CN',
+  Spanish: 'es-ES',
+  French: 'fr-FR',
+  German: 'de-DE',
+  Arabic: 'ar-SA',
+};
+
+function bcp47For(languageName) {
+  return LANGUAGE_NAME_TO_BCP47[languageName];
+}
+
+// Unicode script ranges for the app's supported languages. This is a hard,
+// code-level backstop on top of the system prompt's "always output in the
+// listener's language" rule — that rule is an instruction to the model, not
+// a guarantee, and real testing showed it can still fail (e.g. an echoed
+// English turn getting voiced on a Hindi-output session). A script check on
+// the translation text that already streams in alongside each audio chunk
+// (no separate audio analysis needed) lets us catch a *confident* mismatch
+// and drop that audio before it reaches the listener, rather than trusting
+// the model never to slip.
+//
+// Limitation, by design: English/Spanish/French/German all share the Latin
+// script, so this can't tell them apart from each other — only a script
+// mismatch against Hindi (Devanagari), Arabic, or Mandarin (CJK) is
+// detectable this way. That's still exactly the failure mode that showed up
+// in testing, so it's worth having even without full language coverage.
+const SCRIPT_RANGES = {
+  Hindi: /[ऀ-ॿ]/u,
+  Arabic: /[؀-ۿ]/u,
+  Mandarin: /[一-鿿]/u,
+  English: /[A-Za-z]/u,
+  Spanish: /[A-Za-z]/u,
+  French: /[A-Za-z]/u,
+  German: /[A-Za-z]/u,
+};
+
+/**
+ * Returns true only when `text` is confidently written in a DIFFERENT,
+ * script-distinguishable language than `expectedLang` — never for languages
+ * that share a script (can't tell those apart) and never when there isn't
+ * enough text yet to judge (biases toward letting audio through rather than
+ * blocking real speech on a false positive).
+ */
+function scriptMismatch(text, expectedLang) {
+  const expectedPattern = SCRIPT_RANGES[expectedLang];
+  if (!expectedPattern) return false;
+
+  const letters = (text.match(/\p{L}/gu) || []).length;
+  if (letters < 6) return false; // not enough signal yet
+
+  if (expectedPattern.test(text)) return false; // has expected-script content — allow
+
+  for (const [lang, pattern] of Object.entries(SCRIPT_RANGES)) {
+    if (lang === expectedLang || pattern.source === expectedPattern.source) continue;
+    const otherMatches = (text.match(new RegExp(pattern.source, 'gu')) || []).length;
+    if (otherMatches >= letters * 0.6) return true; // confidently a different, distinguishable script
+  }
+  return false;
+}
 
 /**
  * Wraps raw PCM data in a WAV header so the audio can be played/stored easily.
@@ -109,6 +186,11 @@ class LiveTranslationSession {
     this.turnFirstChunkAt = null;
     this.turnLastChunkAt = null;
     this.turnMaxGapMs = 0;
+    // Set once a script mismatch is detected mid-turn (see scriptMismatch)
+    // and never cleared until the turn resets — once a turn is confirmed to
+    // be in the wrong language, every remaining chunk of it is dropped too,
+    // not just the one that tripped the check.
+    this.turnSuppressed = false;
   }
 
   _buildVoiceName() {
@@ -140,9 +222,11 @@ class LiveTranslationSession {
   _buildConfig() {
     const voiceName = this._buildVoiceName();
     const ageInstruction = this._buildAgeInstruction();
+    const inputCode = bcp47For(this.inputLang);
+    const outputCode = bcp47For(this.outputLang);
 
     return {
-      model: 'gemini-live-2.5-flash-native-audio',
+      model: LIVE_MODEL,
       config: {
         systemInstruction: {
           parts: [{
@@ -156,7 +240,9 @@ ABSOLUTE RULES — breaking any of these means you have failed the task:
 5. Translate the true meaning faithfully. Render idioms and colloquial expressions naturally in the target language, but NEVER at the cost of changing the speaker's perspective or intent.
 6. CRITICAL: Do NOT repeat previous translations. ONLY translate new speech since your last translation.
 7. Ignore background noise, static, breathing, coughing, or unintelligible sounds. If the audio contains only noise with no clear speech, output absolutely nothing — do not fill the gap with a greeting, a guess, or anything at all.
-8. If you are ever unsure what to do with a piece of audio, the correct move is always to output nothing rather than to generate a reply, opinion, or question of your own.`
+8. If you are ever unsure what to do with a piece of audio, the correct move is always to output nothing rather than to generate a reply, opinion, or question of your own.
+9. NEVER extend, complete, or add to what was said. Translate only the exact words spoken — if the sentence is a short fragment or trails off unfinished, translate exactly that fragment and stop there. Do not guess how it would continue, do not add a plausible follow-up sentence, and do not insert any fact, opinion, or topic that was not literally spoken, no matter how naturally it seems to follow.
+10. If the incoming audio is clearly and entirely speech in ${this.outputLang} — not ${this.inputLang} — treat it exactly like background noise: output absolutely nothing. On a phone call, this almost always means the listener's own translated reply is bleeding into this speaker's microphone (the device picking up its own speaker output), not the speaker suddenly switching to the listener's language. This is different from rule 1: rule 1 covers a genuine speaker accidentally using some other language and still needing translation into ${this.outputLang}; this rule covers audio that is ALREADY in ${this.outputLang}, which must never be re-translated, repeated, or passed through — that would be echoing the listener's own words back to them.`
           }]
         },
         responseModalities: ['AUDIO'],
@@ -167,8 +253,8 @@ ABSOLUTE RULES — breaking any of these means you have failed the task:
             }
           }
         },
-        outputAudioTranscription: {},
-        inputAudioTranscription: {},
+        outputAudioTranscription: outputCode ? { languageCodes: [outputCode] } : {},
+        inputAudioTranscription: inputCode ? { languageCodes: [inputCode] } : {},
         // Let Gemini's own server-side VAD decide turn boundaries instead of
         // relying on the client to guess when a sentence has ended. Much
         // shorter than the old client-side 1200-1500ms silence gate.
@@ -229,6 +315,15 @@ ABSOLUTE RULES — breaking any of these means you have failed the task:
             }
             this.turnLastChunkAt = now;
 
+            // Hard backstop on top of the system prompt's language rule —
+            // see scriptMismatch's own comment for why this exists. Once a
+            // turn trips this, every remaining chunk of it is dropped too.
+            if (!this.turnSuppressed && scriptMismatch(this.fullTranslationText, this.outputLang)) {
+              this.turnSuppressed = true;
+              console.warn(`[LiveTranslationSession] Turn ${this.turnId} (${this.inputLang}->${this.outputLang}): suppressed — translation text doesn't match ${this.outputLang}'s script ("${this.fullTranslationText.trim()}"), likely echoed/leaked audio.`);
+            }
+            if (this.turnSuppressed) continue;
+
             // Stream this piece to the partner immediately — don't wait
             // for turnComplete. This is what actually removes the
             // "wait for the whole reply" latency.
@@ -286,9 +381,14 @@ ABSOLUTE RULES — breaking any of these means you have failed the task:
           this.callbacks.onTurnComplete({
             originalText: this.fullOriginalText.trim(),
             translatedText: this.fullTranslationText.trim(),
-            translatedAudioBase64,
+            // Suppressed turns already had their audio dropped chunk-by-chunk
+            // above; also skip relaying the final text and persisting it —
+            // there's nothing here the listener should see, since none of it
+            // reached them as audio either.
+            translatedAudioBase64: this.turnSuppressed ? null : translatedAudioBase64,
             originalAudioBase64,
             turnId: this.turnId,
+            suppressed: this.turnSuppressed,
           });
         }
 

@@ -270,7 +270,17 @@ export function useAudioRecorder({ enabled, onChunk }: AudioRecorderOptions) {
                 audioSession: {
                   category: 'PlayAndRecord',
                   mode: 'VoiceChat',
-                  categoryOptions: ['MixWithOthers', 'DefaultToSpeaker', 'AllowBluetooth'],
+                  // No 'DefaultToSpeaker': that option forces the loud
+                  // external speaker on by default. Omitting it routes
+                  // audio to the earpiece/handset receiver instead (like a
+                  // normal phone call) unless the user explicitly switches
+                  // to speaker or has headphones/Bluetooth connected — much
+                  // quieter output right next to the ear is also far less
+                  // likely to be picked back up by the mic than a loud
+                  // external speaker, which is the acoustic feedback loop
+                  // behind translated speech getting "re-heard" and
+                  // re-translated.
+                  categoryOptions: ['MixWithOthers', 'AllowBluetooth'],
                 },
               },
               android: { audioFocusStrategy: 'communication' },

@@ -324,6 +324,18 @@ function makeSessionCallbacks(session, sessionId, role) {
       console.log(`[LATENCY][server] Turn ${result.turnId} (${role}): fully relayed, ${relayMs}ms from first chunk relayed to turn complete`);
 
       send(senderSocket(), { type: 'processing_done', turnId: result.turnId });
+
+      if (result.suppressed) {
+        // Caught a script/language mismatch mid-turn (see geminiService.js's
+        // scriptMismatch) — the audio was already dropped chunk-by-chunk as
+        // it streamed, so there's nothing valid to show either side. Still
+        // release the partner's lock so their UI doesn't stay stuck thinking
+        // a reply is coming.
+        console.warn(`[server] Turn ${result.turnId} (${role}) suppressed — not relaying or persisting.`);
+        send(partnerSocket(), { type: 'lock_released' });
+        return;
+      }
+
       send(senderSocket(), {
         type: 'transcript',
         originalText: result.originalText,
