@@ -189,14 +189,19 @@ export function SessionScreen({
           currentSoundRef.current = player;
           player.play();
 
-          await new Promise<void>((resolve) => {
-            const subscription = (player as any).addListener('playbackStatusUpdate', (s: any) => {
-              if (s.didJustFinish) {
-                subscription.remove();
-                resolve();
-              }
-            });
-          });
+          // Wait for playback to finish, with a 15s timeout safety net in case
+          // didJustFinish never fires (expo-audio version differences on Android).
+          await Promise.race([
+            new Promise<void>((resolve) => {
+              const subscription = (player as any).addListener('playbackStatusUpdate', (s: any) => {
+                if (s.didJustFinish || s.isLoaded === false) {
+                  subscription.remove();
+                  resolve();
+                }
+              });
+            }),
+            new Promise<void>((resolve) => setTimeout(resolve, 15000)),
+          ]);
 
           player.remove();
           currentSoundRef.current = null;
