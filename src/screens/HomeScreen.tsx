@@ -10,8 +10,7 @@ import {
   Platform,
   ScrollView,
   ActivityIndicator,
-  FlatList,
-  TextInput,
+  useWindowDimensions,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { LanguageSelector } from '../components/LanguageSelector';
@@ -23,6 +22,7 @@ import { useAuth, useUser } from '@clerk/clerk-expo';
 import { useRef } from 'react';
 import { Image } from 'react-native';
 import { WS_URL } from '../config';
+import { colors, DESKTOP_BREAKPOINT } from '../theme';
 
 interface HomeScreenProps {
   onSessionReady: (params: {
@@ -55,6 +55,9 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
   const speakerAge: number | undefined = meta?.age !== undefined ? Number(meta.age) : undefined;
   const nativeLanguage: string | undefined = meta?.nativeLanguage;
 
+  const { width } = useWindowDimensions();
+  const isDesktop = Platform.OS === 'web' && width >= DESKTOP_BREAKPOINT;
+
   const [myLang, setMyLang] = useState('English');
 
   // Default to the user's native language (set in their profile) until they
@@ -76,7 +79,6 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
   };
   const [showQR, setShowQR] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
-  const [manualCode, setManualCode] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [recentConversations, setRecentConversations] = useState<RecentConversation[]>([]);
   const [loadingConvs, setLoadingConvs] = useState(false);
@@ -130,154 +132,158 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
     await joinSession(scannedId, myLang, userId, speakerGender, speakerAge);
   };
 
+  const showRecent = loadingConvs || recentConversations.length > 0;
+
   return (
     <SafeAreaView style={styles.container}>
       {/* Background accents */}
       <View style={styles.topGlow} />
       <View style={styles.bottomGlow} />
 
-      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
-        {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerTitleContainer}>
-            <View style={styles.logoIcon}>
-              <Feather name="globe" size={20} color="#000" />
+      <ScrollView
+        contentContainerStyle={[styles.scroll, isDesktop && styles.scrollDesktop]}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={[styles.page, isDesktop && styles.pageDesktop]}>
+          {/* Header */}
+          <View style={styles.header}>
+            <View style={styles.headerTitleContainer}>
+              <View style={styles.logoIcon}>
+                <Feather name="globe" size={20} color={colors.ink} />
+              </View>
+              <Text style={styles.title}>
+                Shak<Text style={styles.titleGreen}>Translate</Text>
+              </Text>
             </View>
-            <Text style={styles.title}>
-              Shak<Text style={styles.titleGreen}>Translate</Text>
-            </Text>
-          </View>
-          <View style={{ flexDirection: 'row', gap: 10 }}>
-            <TouchableOpacity onPress={onOpenProfile} style={styles.profileBtn}>
-              {user?.imageUrl ? (
-                <Image source={{ uri: user.imageUrl }} style={styles.profileAvatar} />
-              ) : (
-                <Feather name="user" size={18} color="rgba(255,255,255,0.6)" />
-              )}
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => signOut()} style={styles.signOutBtn}>
-              <Feather name="log-out" size={18} color="rgba(255,255,255,0.6)" />
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        <Text style={styles.subtitle}>Real-time two-way conversation translation</Text>
-
-        {/* Error */}
-        {errorMsg && (
-          <View style={styles.errorBox}>
-            <Feather name="alert-circle" size={14} color="#ef4444" />
-            <Text style={styles.errorText}>{errorMsg}</Text>
-          </View>
-        )}
-
-        {/* Language Config */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>MY LANGUAGE</Text>
-          <LanguageSelector label="" selected={myLang} onSelect={handleSetMyLang} />
-        </View>
-
-        {/* Actions */}
-        <View style={styles.actions}>
-          {/* Start Session */}
-          <TouchableOpacity
-            style={styles.primaryBtn}
-            onPress={handleStartSession}
-            disabled={status === 'connecting' || status === 'waiting'}
-            activeOpacity={0.8}
-          >
-            {status === 'connecting' ? (
-              <ActivityIndicator color="#000" size="small" />
-            ) : (
-              <Feather name="plus-circle" size={20} color="#000" />
-            )}
-            <Text style={styles.primaryBtnText}>
-              {status === 'connecting' ? 'Connecting...' : 'Start Session'}
-            </Text>
-          </TouchableOpacity>
-
-          <View style={styles.orRow}>
-            <View style={styles.orLine} />
-            <Text style={styles.orText}>OR</Text>
-            <View style={styles.orLine} />
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              <TouchableOpacity onPress={onOpenProfile} style={styles.profileBtn}>
+                {user?.imageUrl ? (
+                  <Image source={{ uri: user.imageUrl }} style={styles.profileAvatar} />
+                ) : (
+                  <Feather name="user" size={18} color={colors.muted} />
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => signOut()} style={styles.signOutBtn}>
+                <Feather name="log-out" size={18} color={colors.muted} />
+              </TouchableOpacity>
+            </View>
           </View>
 
-          {/* Join Session */}
-          <TouchableOpacity
-            style={styles.secondaryBtn}
-            onPress={() => setShowScanner(true)}
-            activeOpacity={0.8}
-          >
-            <Feather name="camera" size={20} color="#39FF14" />
-            <Text style={styles.secondaryBtnText}>Join Session (Scan QR)</Text>
-          </TouchableOpacity>
+          <Text style={styles.greetTitle}>Ready when you are</Text>
+          <Text style={styles.subtitle}>Start a call and share the code, or join one.</Text>
 
-          {/* Fallback for when camera scanning isn't available/working */}
-          <View style={styles.manualJoinRow}>
-            <TextInput
-              style={styles.manualJoinInput}
-              placeholder="Or paste session code"
-              placeholderTextColor="rgba(255,255,255,0.3)"
-              value={manualCode}
-              onChangeText={setManualCode}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-            <TouchableOpacity
-              style={[styles.manualJoinBtn, !manualCode.trim() && styles.manualJoinBtnDisabled]}
-              disabled={!manualCode.trim()}
-              onPress={() => handleScanned(manualCode.trim())}
-            >
-              <Text style={styles.manualJoinBtnText}>Join</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {/* Recent Conversations */}
-        <View style={styles.recentSection}>
-          <View style={styles.recentHeader}>
-            <Feather name="message-square" size={13} color="rgba(255,255,255,0.3)" />
-            <Text style={styles.recentTitle}> RECENT CONVERSATIONS</Text>
-          </View>
-          {loadingConvs && <ActivityIndicator color="#39FF14" style={{ marginTop: 16 }} />}
-          {!loadingConvs && recentConversations.length === 0 && (
-            <Text style={styles.recentEmpty}>No conversations yet. Start a session!</Text>
+          {/* Error */}
+          {errorMsg && (
+            <View style={styles.errorBox}>
+              <Feather name="alert-circle" size={14} color={colors.danger} />
+              <Text style={styles.errorText}>{errorMsg}</Text>
+            </View>
           )}
-          {recentConversations.map(conv => (
-            <View key={conv.id} style={styles.convItemWrapper}>
-              {/* Chat transcript button */}
-              <TouchableOpacity
-                style={styles.convItem}
-                onPress={() => onOpenConversation(conv.id, userId || '')}
-                activeOpacity={0.75}
-              >
-                <View style={styles.convIcon}>
-                  <Feather name="globe" size={16} color="#39FF14" />
+
+          {/* Language Config */}
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>YOU'LL SPEAK</Text>
+            <LanguageSelector label="" selected={myLang} onSelect={handleSetMyLang} />
+          </View>
+
+          {/* Actions */}
+          <View style={[styles.actions, isDesktop && styles.actionsDesktop]}>
+            <TouchableOpacity
+              style={[
+                styles.primaryBtn,
+                isDesktop && styles.entryCard,
+              ]}
+              onPress={handleStartSession}
+              disabled={status === 'connecting' || status === 'waiting'}
+              activeOpacity={0.85}
+            >
+              <View style={[styles.entryIconWrap, isDesktop && styles.entryIconWrapDesktop]}>
+                {status === 'connecting' ? (
+                  <ActivityIndicator color={colors.ink} size="small" />
+                ) : (
+                  <Feather name="phone-call" size={isDesktop ? 22 : 20} color={colors.ink} />
+                )}
+              </View>
+              <View style={isDesktop ? { alignItems: 'center' } : undefined}>
+                <Text style={styles.primaryBtnText}>
+                  {status === 'connecting' ? 'Connecting…' : 'Start a call'}
+                </Text>
+                {isDesktop && <Text style={styles.entryCardSub}>Get a code to share</Text>}
+              </View>
+            </TouchableOpacity>
+
+            {!isDesktop && (
+              <View style={styles.orRow}>
+                <View style={styles.orLine} />
+                <Text style={styles.orText}>or</Text>
+                <View style={styles.orLine} />
+              </View>
+            )}
+
+            <TouchableOpacity
+              style={[
+                styles.secondaryBtn,
+                isDesktop && styles.entryCard,
+                isDesktop && styles.entryCardSecondary,
+              ]}
+              onPress={() => setShowScanner(true)}
+              activeOpacity={0.85}
+            >
+              <View style={[styles.entryIconWrap, styles.entryIconWrapSecondary, isDesktop && styles.entryIconWrapDesktop]}>
+                <Feather name="camera" size={isDesktop ? 22 : 20} color={colors.signal} />
+              </View>
+              <View style={isDesktop ? { alignItems: 'center' } : undefined}>
+                <Text style={styles.secondaryBtnText}>Scan to join a call</Text>
+                {isDesktop && <Text style={styles.entryCardSub}>Use the other device's code</Text>}
+              </View>
+            </TouchableOpacity>
+          </View>
+
+          {/* Recent Conversations — only shown once there's something to show */}
+          {showRecent && (
+            <View style={styles.recentSection}>
+              <View style={styles.recentHeader}>
+                <Feather name="message-square" size={13} color={colors.muted} />
+                <Text style={styles.recentTitle}> RECENT CONVERSATIONS</Text>
+              </View>
+              {loadingConvs && <ActivityIndicator color={colors.signal} style={{ marginTop: 16 }} />}
+              {recentConversations.map(conv => (
+                <View key={conv.id} style={styles.convItemWrapper}>
+                  {/* Chat transcript button */}
+                  <TouchableOpacity
+                    style={styles.convItem}
+                    onPress={() => onOpenConversation(conv.id, userId || '')}
+                    activeOpacity={0.75}
+                  >
+                    <View style={styles.convIcon}>
+                      <Feather name="globe" size={16} color={colors.signal} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                        <Text style={styles.convLangs}>{conv.myLang} ↔ {conv.partnerLang || '...'}</Text>
+                        <Text style={styles.convTime}>
+                          {conv.lastMessage ? timeAgo(conv.lastMessage.sentAt) : timeAgo(conv.startedAt)}
+                        </Text>
+                      </View>
+                      <Text style={styles.convPreview} numberOfLines={1}>
+                        {conv.lastMessage
+                          ? `${conv.lastMessage.isMe ? 'You: ' : ''}${conv.lastMessage.text}`
+                          : `${conv.messageCount} messages`}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                  {/* Recordings button */}
+                  <TouchableOpacity
+                    style={styles.recordingsBtn}
+                    onPress={() => onOpenRecordings(conv.id, userId || '', conv.myLang, conv.partnerLang || '')}
+                    activeOpacity={0.75}
+                  >
+                    <Feather name="headphones" size={15} color={colors.signal} />
+                  </TouchableOpacity>
                 </View>
-                <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                    <Text style={styles.convLangs}>{conv.myLang} ↔ {conv.partnerLang || '...'}</Text>
-                    <Text style={styles.convTime}>
-                      {conv.lastMessage ? timeAgo(conv.lastMessage.sentAt) : timeAgo(conv.startedAt)}
-                    </Text>
-                  </View>
-                  <Text style={styles.convPreview} numberOfLines={1}>
-                    {conv.lastMessage
-                      ? `${conv.lastMessage.isMe ? 'You: ' : ''}${conv.lastMessage.text}`
-                      : `${conv.messageCount} messages`}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-              {/* Recordings button */}
-              <TouchableOpacity
-                style={styles.recordingsBtn}
-                onPress={() => onOpenRecordings(conv.id, userId || '', conv.myLang, conv.partnerLang || '')}
-                activeOpacity={0.75}
-              >
-                <Feather name="headphones" size={15} color="#39FF14" />
-              </TouchableOpacity>
+              ))}
             </View>
-          ))}
+          )}
         </View>
       </ScrollView>
 
@@ -285,19 +291,19 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
       <Modal visible={showQR} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Share this QR Code</Text>
-            <Text style={styles.modalSubtitle}>Ask your partner to scan this</Text>
+            <Text style={styles.modalTitle}>Waiting for them to join</Text>
+            <Text style={styles.modalSubtitle}>Share the code, or have them scan this screen</Text>
 
             {sessionId ? (
               <QRCodeDisplay sessionId={sessionId} />
             ) : (
-              <ActivityIndicator color="#39FF14" size="large" style={{ marginVertical: 40 }} />
+              <ActivityIndicator color={colors.signal} size="large" style={{ marginVertical: 40 }} />
             )}
 
             <StatusBadge status={status} role="host" />
 
             {status === 'connected' && (
-              <Text style={styles.connectedMsg}>Partner connected! Starting session…</Text>
+              <Text style={styles.connectedMsg}>Partner connected! Starting call…</Text>
             )}
 
             <TouchableOpacity
@@ -327,20 +333,23 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0A0A0A' },
+  container: { flex: 1, backgroundColor: colors.ink },
   scroll: { padding: 24, paddingBottom: 48 },
+  scrollDesktop: { alignItems: 'center', paddingTop: 56 },
+  page: { width: '100%' },
+  pageDesktop: { maxWidth: 640 },
   topGlow: {
     position: 'absolute', top: -80, right: -80,
     width: 260, height: 260, borderRadius: 130,
-    backgroundColor: '#39FF14', opacity: 0.05,
+    backgroundColor: colors.signal, opacity: 0.06,
   },
   bottomGlow: {
     position: 'absolute', bottom: -80, left: -80,
     width: 260, height: 260, borderRadius: 130,
-    backgroundColor: '#39FF14', opacity: 0.05,
+    backgroundColor: colors.signal, opacity: 0.06,
   },
   header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20,
     paddingTop: Platform.OS === 'android' ? 20 : 8,
   },
   headerTitleContainer: {
@@ -348,24 +357,24 @@ const styles = StyleSheet.create({
   },
   logoIcon: {
     width: 36, height: 36, borderRadius: 10,
-    backgroundColor: '#39FF14',
+    backgroundColor: colors.signal,
     justifyContent: 'center', alignItems: 'center', marginRight: 10,
   },
-  title: { color: '#fff', fontSize: 24, fontWeight: '800', letterSpacing: -0.5 },
-  titleGreen: { color: '#39FF14' },
+  title: { color: colors.warm, fontSize: 24, fontWeight: '800', letterSpacing: -0.5 },
+  titleGreen: { color: colors.signal },
   signOutBtn: {
     padding: 8,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    backgroundColor: colors.surface2,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
+    borderColor: colors.hair,
   },
   profileBtn: {
     padding: 6,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    backgroundColor: colors.surface2,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
+    borderColor: colors.hair,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -374,107 +383,105 @@ const styles = StyleSheet.create({
     height: 24,
     borderRadius: 12,
   },
+  greetTitle: { color: colors.warm, fontSize: 19, fontWeight: '600', marginBottom: 4 },
   subtitle: {
-    color: 'rgba(255,255,255,0.35)',
+    color: colors.muted,
     fontSize: 13, marginBottom: 28,
   },
   errorBox: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: 'rgba(239,68,68,0.1)',
-    borderWidth: 1, borderColor: 'rgba(239,68,68,0.2)',
+    backgroundColor: 'rgba(232,92,92,0.1)',
+    borderWidth: 1, borderColor: 'rgba(232,92,92,0.25)',
     borderRadius: 12, padding: 12, marginBottom: 16,
   },
-  errorText: { color: '#ef4444', fontSize: 13, flex: 1 },
+  errorText: { color: colors.danger, fontSize: 13, flex: 1 },
   card: {
-    backgroundColor: '#111',
+    backgroundColor: colors.surface,
     borderRadius: 20,
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)',
+    borderWidth: 1, borderColor: colors.hair,
     padding: 20,
     marginBottom: 28,
   },
   cardTitle: {
-    color: 'rgba(255,255,255,0.3)',
+    color: colors.muted,
     fontSize: 10, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
     letterSpacing: 2, marginBottom: 18,
   },
-  divider: {
-    height: 1, backgroundColor: 'rgba(255,255,255,0.06)', marginVertical: 16,
-  },
   actions: { gap: 12 },
+  actionsDesktop: { flexDirection: 'row', gap: 16, alignItems: 'stretch' },
   primaryBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
-    backgroundColor: '#39FF14', borderRadius: 16,
+    backgroundColor: colors.signal, borderRadius: 16,
     paddingVertical: 18, paddingHorizontal: 24,
-    shadowColor: '#39FF14', shadowOffset: { width: 0, height: 6 },
+    shadowColor: colors.signal, shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.35, shadowRadius: 12, elevation: 5,
   },
-  primaryBtnText: { color: '#000', fontSize: 16, fontWeight: '800', letterSpacing: 0.5 },
+  primaryBtnText: { color: colors.ink, fontSize: 16, fontWeight: '800', letterSpacing: 0.3 },
   orRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  orLine: { flex: 1, height: 1, backgroundColor: 'rgba(255,255,255,0.07)' },
-  orText: { color: 'rgba(255,255,255,0.25)', fontSize: 12 },
+  orLine: { flex: 1, height: 1, backgroundColor: colors.hair },
+  orText: { color: colors.muted, fontSize: 12 },
   secondaryBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
-    backgroundColor: 'rgba(57,255,20,0.08)',
-    borderWidth: 1, borderColor: 'rgba(57,255,20,0.3)',
+    backgroundColor: colors.surface2,
+    borderWidth: 1, borderColor: colors.hair,
     borderRadius: 16, paddingVertical: 18, paddingHorizontal: 24,
   },
-  secondaryBtnText: { color: '#39FF14', fontSize: 16, fontWeight: '700' },
-  manualJoinRow: { flexDirection: 'row', gap: 8, marginTop: 12 },
-  manualJoinInput: {
-    flex: 1, color: '#fff', fontSize: 14,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
-    borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12,
+  secondaryBtnText: { color: colors.warm, fontSize: 16, fontWeight: '700' },
+
+  // Desktop: the two entries become equal-weight cards side by side instead
+  // of a ranked primary button + secondary line, since there's room for both
+  // to read as clear, deliberate choices rather than one being squeezed in.
+  entryCard: {
+    flex: 1, flexDirection: 'column', paddingVertical: 32, gap: 14,
+    borderRadius: 20,
   },
-  manualJoinBtn: {
-    backgroundColor: 'rgba(57,255,20,0.15)',
-    borderWidth: 1, borderColor: 'rgba(57,255,20,0.3)',
-    borderRadius: 12, paddingHorizontal: 20, justifyContent: 'center',
+  entryCardSecondary: {},
+  entryCardSub: { color: 'rgba(10,13,12,0.55)', fontSize: 12.5, marginTop: 2 },
+  entryIconWrap: {
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: 'rgba(10,13,12,0.12)',
+    alignItems: 'center', justifyContent: 'center',
   },
-  manualJoinBtnDisabled: { opacity: 0.4 },
-  manualJoinBtnText: { color: '#39FF14', fontSize: 14, fontWeight: '700' },
-  footer: {
-    color: 'rgba(255,255,255,0.2)', fontSize: 11,
-    textAlign: 'center', marginTop: 28, lineHeight: 17,
-  },
+  entryIconWrapSecondary: { backgroundColor: colors.surface3 },
+  entryIconWrapDesktop: { width: 52, height: 52, borderRadius: 26 },
+
   // Modal
   modalOverlay: {
     flex: 1, backgroundColor: 'rgba(0,0,0,0.85)',
     justifyContent: 'flex-end',
   },
   modalCard: {
-    backgroundColor: '#111',
+    backgroundColor: colors.surface,
     borderTopLeftRadius: 28, borderTopRightRadius: 28,
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)',
+    borderWidth: 1, borderColor: colors.hair,
     padding: 28, alignItems: 'center', paddingBottom: 48,
   },
-  modalTitle: { color: '#fff', fontSize: 20, fontWeight: '700', marginBottom: 4 },
-  modalSubtitle: { color: 'rgba(255,255,255,0.4)', fontSize: 13, marginBottom: 20 },
+  modalTitle: { color: colors.warm, fontSize: 20, fontWeight: '700', marginBottom: 4 },
+  modalSubtitle: { color: colors.muted, fontSize: 13, marginBottom: 20, textAlign: 'center' },
   connectedMsg: {
-    color: '#39FF14', fontSize: 13, fontWeight: '600',
+    color: colors.signal, fontSize: 13, fontWeight: '600',
     marginTop: 16, textAlign: 'center',
   },
   cancelBtn: {
     marginTop: 24,
     paddingHorizontal: 32, paddingVertical: 12,
-    borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
+    borderRadius: 12, borderWidth: 1, borderColor: colors.hair,
   },
-  cancelBtnText: { color: 'rgba(255,255,255,0.4)', fontSize: 14 },
+  cancelBtnText: { color: colors.muted, fontSize: 14 },
 
   // Recent Conversations
   recentSection: { marginTop: 32 },
   recentHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
-  recentTitle: { color: 'rgba(255,255,255,0.3)', fontSize: 11, fontWeight: '700', letterSpacing: 1, marginLeft: 6 },
-  recentEmpty: { color: 'rgba(255,255,255,0.3)', fontSize: 13, textAlign: 'center', marginTop: 16 },
+  recentTitle: { color: colors.muted, fontSize: 11, fontWeight: '700', letterSpacing: 1, marginLeft: 6 },
   convItem: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.03)',
+    backgroundColor: colors.surface,
     borderRadius: 16,
     padding: 16,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.05)',
+    borderColor: colors.hair,
   },
   convItemWrapper: {
     flexDirection: 'row',
@@ -486,20 +493,20 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 16,
-    backgroundColor: 'rgba(57,255,20,0.08)',
+    backgroundColor: colors.surface2,
     borderWidth: 1,
-    borderColor: 'rgba(57,255,20,0.25)',
+    borderColor: colors.hair,
     justifyContent: 'center',
     alignItems: 'center',
     flexShrink: 0,
   },
   convIcon: {
     width: 36, height: 36, borderRadius: 18,
-    backgroundColor: 'rgba(57,255,20,0.1)',
+    backgroundColor: colors.surface2,
     justifyContent: 'center', alignItems: 'center',
     marginRight: 14,
   },
-  convLangs: { color: '#fff', fontSize: 14, fontWeight: '600' },
-  convTime: { color: 'rgba(255,255,255,0.4)', fontSize: 11 },
-  convPreview: { color: 'rgba(255,255,255,0.5)', fontSize: 13, marginTop: 4 },
+  convLangs: { color: colors.warm, fontSize: 14, fontWeight: '600' },
+  convTime: { color: colors.muted, fontSize: 11 },
+  convPreview: { color: colors.muted, fontSize: 13, marginTop: 4 },
 });

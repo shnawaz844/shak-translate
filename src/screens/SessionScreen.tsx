@@ -1,7 +1,7 @@
-import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet,
-  ActivityIndicator, ScrollView, Platform,
+  ScrollView, Platform, useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { createAudioPlayer, type AudioPlayer } from 'expo-audio';
@@ -11,10 +11,14 @@ import Animated, {
   withRepeat, withSequence, withTiming, Easing,
 } from 'react-native-reanimated';
 
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
 import { useWebSocket } from '../hooks/useWebSocket';
-import { StatusBadge } from '../components/StatusBadge';
 import { Alert } from '../utils/alertCompat';
+import { colors, DESKTOP_BREAKPOINT } from '../theme';
+
+const KEEP_AWAKE_TAG = 'shaktranslate-call';
 
 interface SessionScreenProps {
   sessionId: string;
@@ -32,6 +36,12 @@ interface TranscriptEntry {
   timestamp: number;
 }
 
+function formatDuration(totalSeconds: number): string {
+  const m = Math.floor(totalSeconds / 60).toString().padStart(2, '0');
+  const s = Math.floor(totalSeconds % 60).toString().padStart(2, '0');
+  return `${m}:${s}`;
+}
+
 export function SessionScreen({
   sessionId,
   role,
@@ -40,12 +50,15 @@ export function SessionScreen({
   onEnd,
 }: SessionScreenProps) {
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
-  const [currentSentText, setCurrentSentText] = useState<string | null>(null);
-  const [currentReceivedText, setCurrentReceivedText] = useState<string | null>(null);
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const [partnerSpeaking, setPartnerSpeaking] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [hasError, setHasError] = useState(false);
+  const [showTranscript, setShowTranscript] = useState(false);
+  const [durationSec, setDurationSec] = useState(0);
+
+  const { width } = useWindowDimensions();
+  const isDesktop = Platform.OS === 'web' && width >= DESKTOP_BREAKPOINT;
 
   const scrollRef = useRef<ScrollView>(null);
 
@@ -126,12 +139,6 @@ export function SessionScreen({
       audioQueueRef.current.sort((a, b) => a.index - b.index);
       const chunk = audioQueueRef.current.shift();
       if (!chunk) continue;
-
-      // chunk.text is the FULL accumulated translation for the turn so far
-      // (see geminiService.js's fullTranslationText), not just this chunk's
-      // new words — display it as-is rather than appending, which was
-      // duplicating the same growing text onto itself every chunk.
-      setCurrentReceivedText(chunk.text);
 
       if (!chunk.base64) continue;
 
@@ -218,11 +225,6 @@ export function SessionScreen({
       });
     }, []),
 
-    onTranscript: useCallback((original: string, translated: string) => {
-      if (!original.trim() && !translated.trim()) return;
-      setCurrentSentText(`${original} → ${translated}`);
-    }, []),
-
     onPartnerDisconnected: useCallback(() => {
       setPartnerSpeaking(false);
       Alert.alert('Partner Disconnected', 'Your partner has left the session.', [{ text: 'OK', onPress: onEnd }]);
@@ -248,7 +250,7 @@ export function SessionScreen({
     sendAudioStreamChunk(audioBase64, mimeType, role, sessionId);
   }, [sendAudioStreamChunk, role, sessionId]);
 
-  const { isActive: isRecording, isSpeaking, audioLevel, error: micError } = useAudioRecorder({
+  const { error: micError } = useAudioRecorder({
     enabled: canRecord,
     onChunk: handleChunk,
   });
@@ -269,58 +271,70 @@ export function SessionScreen({
 
   // Keep the screen awake for the whole call — this is a hands-free calling
   // screen, and the mic's own speech detection stops working the moment the
-  // OS suspends the tab/screen on an idle timeout. Wake locks are also
-  // automatically released by the browser when the tab is hidden (e.g. the
-  // user briefly switches apps), so re-acquire on visibility change too.
-  const wakeLockRef = useRef<any>(null);
+  // OS suspends the tab/screen on an idle timeout. expo-keep-awake covers
+  // native (iOS/Android) as well as web, unlike the old hand-rolled
+  // navigator.wakeLock call which was a no-op on native — that's why the
+  // screen kept turning off there even after the web fix. Web's underlying
+  // Wake Lock API still auto-releases when the tab is hidden (e.g. the user
+  // briefly switches apps) and never re-acquires itself, so keep the
+  // visibility-based reacquire for that platform.
   useEffect(() => {
-    if (Platform.OS !== 'web' || typeof navigator === 'undefined' || !('wakeLock' in navigator)) return;
+    if (status !== 'connected') return;
 
-    const acquire = async () => {
-      try {
-        wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
-      } catch (e) {
-        console.warn('[SessionScreen] Wake lock request failed:', e);
-      }
+    const acquire = () => {
+      activateKeepAwakeAsync(KEEP_AWAKE_TAG).catch((e) => {
+        console.warn('[SessionScreen] Keep awake request failed:', e);
+      });
     };
+    acquire();
 
     const handleVisibility = () => {
-      if (document.visibilityState === 'visible' && status === 'connected' && !wakeLockRef.current) {
-        acquire();
-      }
+      if (document.visibilityState === 'visible') acquire();
     };
-
-    if (status === 'connected') acquire();
-    document.addEventListener('visibilitychange', handleVisibility);
+    if (Platform.OS === 'web') document.addEventListener('visibilitychange', handleVisibility);
 
     return () => {
-      document.removeEventListener('visibilitychange', handleVisibility);
-      if (wakeLockRef.current) {
-        wakeLockRef.current.release().catch(() => {});
-        wakeLockRef.current = null;
-      }
+      if (Platform.OS === 'web') document.removeEventListener('visibilitychange', handleVisibility);
+      deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {});
     };
   }, [status]);
 
-  // ── Pulse animation ─────────────────────────────────────────────────────────
-  const pulseAnim = useSharedValue(1);
+  // Call duration timer — starts counting the moment the call connects and
+  // runs continuously regardless of who's talking or playing back, same as
+  // any real phone call's timer.
+  const callStartRef = useRef<number | null>(null);
   useEffect(() => {
-    if (isSpeaking) {
-      pulseAnim.value = withRepeat(
-        withSequence(
-          withTiming(1.6, { duration: 600, easing: Easing.out(Easing.ease) }),
-          withTiming(1, { duration: 600, easing: Easing.in(Easing.ease) })
-        ),
-        -1, false
-      );
-    } else {
-      pulseAnim.value = withTiming(1, { duration: 300 });
-    }
-  }, [isSpeaking, pulseAnim]);
+    if (status !== 'connected') return;
+    if (callStartRef.current === null) callStartRef.current = Date.now();
+    const interval = setInterval(() => {
+      setDurationSec(Math.floor((Date.now() - (callStartRef.current as number)) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [status]);
 
-  const pulseStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: pulseAnim.value }],
-    opacity: isSpeaking ? 1 - (pulseAnim.value - 1) * 1.2 : 0,
+  // ── Ambient breathing animation ──────────────────────────────────────────
+  // Runs continuously at a constant, gentle pace — it never reacts to who is
+  // speaking or whether translation is playing back. The call screen must
+  // look and feel identical throughout the call regardless of turn-taking;
+  // this is the one piece of motion on the screen, present purely to signal
+  // "this call is live," not as a status indicator.
+  const breathe = useSharedValue(0);
+  useEffect(() => {
+    breathe.value = withRepeat(
+      withSequence(
+        withTiming(1, { duration: 2250, easing: Easing.inOut(Easing.ease) }),
+        withTiming(0, { duration: 2250, easing: Easing.inOut(Easing.ease) })
+      ),
+      -1, false
+    );
+  }, [breathe]);
+
+  const orbStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: 1 + breathe.value * 0.035 }],
+  }));
+  const ringStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: 0.94 + breathe.value * 0.12 }],
+    opacity: 0.35 + breathe.value * 0.35,
   }));
 
   // ── End Session ─────────────────────────────────────────────────────────────
@@ -358,324 +372,235 @@ export function SessionScreen({
     };
   }, []);
 
-  const barHeights = useMemo(() =>
-    [...Array(6)].map((_, i) => {
-      const phase = (i / 6) * Math.PI * 2;
-      return 12 + Math.abs(Math.sin(phase + audioLevel * 10)) * audioLevel * 64;
-    }),
-    [audioLevel]);
+  const partnerInitial = (partnerLang || '?').trim().charAt(0).toUpperCase();
+  const isConnected = status === 'connected';
+  const statusLabel = hasError ? 'Microphone error' : isConnected ? 'In call' : 'Connecting…';
+
+  // isProcessing / isPlayingAudio / partnerSpeaking are intentionally not
+  // wired into the stage UI below — the call screen stays one continuous
+  // state no matter who's talking. They still drive the transcript and the
+  // audio pipeline above.
+  void isProcessing; void isPlayingAudio; void partnerSpeaking;
+
+  const transcriptPanel = (
+    <View style={[styles.panelInner, !isDesktop && { flex: 1 }]}>
+      <View style={styles.panelHead}>
+        <Text style={styles.panelTitle}>Conversation</Text>
+        {!isDesktop && (
+          <TouchableOpacity onPress={() => setShowTranscript(false)} style={styles.sheetClose}>
+            <Feather name="x" size={15} color={colors.muted} />
+          </TouchableOpacity>
+        )}
+      </View>
+      <ScrollView
+        ref={scrollRef}
+        style={{ flex: 1 }}
+        contentContainerStyle={styles.logContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {transcript.length === 0 ? (
+          <Text style={styles.logEmpty}>Nothing said yet.</Text>
+        ) : (
+          [...transcript].reverse().map((item) => (
+            <View
+              key={item.id}
+              style={[
+                styles.bubble,
+                item.direction === 'sent' ? styles.bubbleYou : styles.bubbleThem,
+              ]}
+            >
+              <Text style={styles.bubbleOriginal}>{item.original}</Text>
+              <Text style={styles.bubbleTranslated}>{item.translated}</Text>
+            </View>
+          ))
+        )}
+      </ScrollView>
+    </View>
+  );
 
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.topGlow} />
 
-      {/* Header */}
-      <View style={styles.header}>
-        <StatusBadge status={status} role={role} />
-        <View style={styles.langPair}>
-          <Text style={styles.langText}>{myLang}</Text>
-          <Feather name="arrow-right" size={12} color="rgba(255,255,255,0.3)" />
-          <Text style={styles.langText}>{partnerLang}</Text>
-        </View>
-        <TouchableOpacity onPress={handleEnd} style={styles.endBtn}>
-          <Feather name="phone-off" size={16} color="#ef4444" />
-        </TouchableOpacity>
-      </View>
-
-      {/* Main content */}
-      <View style={styles.mainContent}>
-
-        {/* Live status panel */}
-        {isRecording && !partnerSpeaking && (
-          <View style={styles.livePanel}>
-            <View style={styles.barsRow}>
-              {barHeights.map((h, i) => (
-                <View
-                  key={i}
-                  style={[styles.audioBar, { height: h }, isSpeaking && styles.audioBarSpeaking]}
-                />
-              ))}
+      <View style={[styles.body, isDesktop && styles.bodyDesktop]}>
+        <View style={styles.stageColumn}>
+          {hasError ? (
+            <View style={styles.errorState}>
+              <Feather name="alert-circle" size={40} color={colors.danger} />
+              <Text style={styles.errorTitle}>Microphone error</Text>
+              <Text style={styles.errorSub}>Tap the mic button below to retry.</Text>
             </View>
-            <Text style={[styles.listeningLabel, isSpeaking && { color: '#fff' }]}>
-              {isSpeaking ? 'SPEECH DETECTED...' : 'LISTENING...'}
-            </Text>
-          </View>
-        )}
-
-        {partnerSpeaking && (
-          <View style={[styles.livePanel, { borderColor: 'rgba(255,165,0,0.3)', backgroundColor: 'rgba(255,165,0,0.05)' }]}>
-            <Feather name="user" size={24} color="orange" style={{ marginBottom: 8 }} />
-            <Text style={[styles.listeningLabel, { color: 'orange' }]}>PARTNER IS SPEAKING...</Text>
-          </View>
-        )}
-
-        {isProcessing && (
-          <View style={styles.processingPanel}>
-            <ActivityIndicator size="small" color="#39FF14" />
-            <Text style={styles.processingLabel}>TRANSLATING...</Text>
-          </View>
-        )}
-
-        {isPlayingAudio && (
-          <View style={{ alignItems: 'center', marginBottom: 16 }}>
-            <View style={[styles.processingPanel, { marginBottom: 4 }]}>
-              <Feather name="volume-2" size={16} color="#39FF14" />
-              <Text style={styles.processingLabel}>PLAYING...</Text>
-            </View>
-          </View>
-        )}
-
-        {/* Current translation preview */}
-        {currentSentText && !isRecording && !isProcessing && (
-          <View style={styles.previewCard}>
-            <Text style={styles.previewLabel}>YOU SAID</Text>
-            <Text style={styles.previewText}>{currentSentText}</Text>
-          </View>
-        )}
-
-        {currentReceivedText && !isProcessing && (
-          <View style={[styles.previewCard, styles.previewCardReceived]}>
-            <Text style={[styles.previewLabel, { color: '#39FF14' }]}>PARTNER SAID</Text>
-            <Text style={styles.previewText}>{currentReceivedText}</Text>
-          </View>
-        )}
-
-        {/* Empty state */}
-        {!isRecording && !isProcessing && !currentSentText && !currentReceivedText && !isPlayingAudio && !partnerSpeaking && !hasError && (
-          <View style={styles.emptyState}>
-            <Feather name={isPaused ? "mic-off" : "mic"} size={40} color="rgba(255,255,255,0.1)" />
-            <Text style={styles.emptyTitle}>
-              {status === 'connected'
-                ? (isPaused ? 'Listening Paused' : 'Ready to speak')
-                : 'Waiting for connection...'}
-            </Text>
-            <Text style={styles.emptySub}>
-              {status === 'connected'
-                ? (isPaused ? 'Tap to resume hands-free mode' : 'Hands-free mode active. Just speak!')
-                : 'Make sure the other device has scanned the QR code.'}
-            </Text>
-          </View>
-        )}
-
-        {hasError && (
-          <View style={styles.emptyState}>
-            <Feather name="alert-circle" size={40} color="#ef4444" />
-            <Text style={styles.emptyTitle}>Microphone Error</Text>
-            <Text style={styles.emptySub}>Please tap the button below to retry.</Text>
-          </View>
-        )}
-
-        {/* Transcript */}
-        {transcript.length > 0 && (
-          <View style={styles.transcriptSection}>
-            <View style={styles.transcriptHeader}>
-              <Feather name="message-square" size={12} color="rgba(255,255,255,0.3)" />
-              <Text style={styles.transcriptHeaderText}> CONVERSATION HISTORY</Text>
-              <TouchableOpacity onPress={() => setTranscript([])}>
-                <Text style={styles.clearText}>Clear</Text>
-              </TouchableOpacity>
-            </View>
-            <ScrollView
-              ref={scrollRef}
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={{ paddingBottom: 16 }}
-            >
-              {transcript.map((item) => (
-                <View
-                  key={item.id}
-                  style={[
-                    styles.transcriptBubble,
-                    item.direction === 'sent' ? styles.bubbleSent : styles.bubbleReceived,
-                  ]}
-                >
-                  <Text style={styles.bubbleOriginal}>{item.original}</Text>
-                  <Text style={styles.bubbleTranslated}>{item.translated}</Text>
-                  <Text style={styles.bubbleTime}>
-                    {new Date(item.timestamp).toLocaleTimeString([], {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
-                  </Text>
+          ) : (
+            <>
+              <View style={styles.topbar}>
+                <View style={styles.langPill}>
+                  <Text style={styles.langPillText}>{myLang}</Text>
+                  <Feather name="arrow-right" size={12} color={colors.muted} />
+                  <Text style={styles.langPillText}>{partnerLang}</Text>
                 </View>
-              ))}
-            </ScrollView>
+                <Text style={styles.timer}>{formatDuration(durationSec)}</Text>
+              </View>
+
+              <View style={styles.stageMid}>
+                <View style={styles.orbWrap}>
+                  <Animated.View style={[styles.ring, ringStyle, !isConnected && styles.ringIdle]} />
+                  <Animated.View style={[styles.orb, orbStyle, !isConnected && styles.orbIdle]}>
+                    <Text style={styles.orbLetter}>{partnerInitial}</Text>
+                  </Animated.View>
+                </View>
+                <Text style={styles.statusSub}>{statusLabel}</Text>
+              </View>
+            </>
+          )}
+
+          <View style={styles.controls}>
+            <TouchableOpacity
+              style={[
+                styles.ctrl,
+                isPaused && !hasError && styles.ctrlMuteActive,
+                hasError && styles.ctrlError,
+              ]}
+              onPress={() => {
+                if (hasError) setHasError(false);
+                else setIsPaused(!isPaused);
+              }}
+              activeOpacity={0.8}
+            >
+              <Feather
+                name={hasError ? 'refresh-cw' : isPaused ? 'mic-off' : 'mic'}
+                size={22}
+                color={isPaused && !hasError ? colors.ink : colors.warm}
+              />
+            </TouchableOpacity>
+
+            <TouchableOpacity style={[styles.ctrl, styles.ctrlEnd]} onPress={handleEnd} activeOpacity={0.85}>
+              <Feather name="phone-off" size={24} color={colors.ink} />
+            </TouchableOpacity>
+
+            {!isDesktop && (
+              <TouchableOpacity
+                style={[styles.ctrl, showTranscript && styles.ctrlTranscriptActive]}
+                onPress={() => setShowTranscript(true)}
+                activeOpacity={0.8}
+              >
+                <Feather name="message-square" size={20} color={showTranscript ? colors.signal : colors.warm} />
+              </TouchableOpacity>
+            )}
           </View>
-        )}
+        </View>
+
+        {isDesktop && <View style={styles.desktopPanel}>{transcriptPanel}</View>}
       </View>
 
-      {/* Controls */}
-      <View style={styles.controls}>
-        <View style={styles.micWrapper}>
-          {isSpeaking && <Animated.View style={[styles.micPulseRing, pulseStyle]} />}
-          <TouchableOpacity
-            style={[
-              styles.micBtn,
-              isPaused && styles.micBtnPaused,
-              (!isPaused && status !== 'connected' && !hasError) && styles.micBtnDisabled,
-              hasError && styles.micBtnError,
-            ]}
-            onPress={() => {
-              if (hasError) setHasError(false);
-              else setIsPaused(!isPaused);
-            }}
-            disabled={status !== 'connected'}
-            activeOpacity={0.8}
-          >
-            <Feather
-              name={hasError ? 'refresh-cw' : isPaused ? 'mic-off' : 'mic'}
-              size={32}
-              color={isPaused || hasError ? '#fff' : status !== 'connected' ? 'rgba(0,0,0,0.4)' : '#000'}
-            />
-          </TouchableOpacity>
+      {!isDesktop && (
+        <View
+          pointerEvents={showTranscript ? 'auto' : 'none'}
+          style={[styles.sheet, showTranscript && styles.sheetOpen]}
+        >
+          {transcriptPanel}
         </View>
-        <Text style={styles.micHint}>
-          {hasError ? 'Tap to Retry Microphone' : isPaused ? 'Tap to Resume Listening' : status === 'connected' ? 'Tap to Pause Listening' : 'Please wait...'}
-        </Text>
-      </View>
+      )}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0A0A0A' },
+  container: { flex: 1, backgroundColor: colors.ink },
   topGlow: {
     position: 'absolute', top: -80, right: -80,
     width: 240, height: 240, borderRadius: 120,
-    backgroundColor: '#39FF14', opacity: 0.04,
+    backgroundColor: colors.signal, opacity: 0.06,
   },
-  header: {
+  body: { flex: 1, flexDirection: 'column' },
+  bodyDesktop: { flexDirection: 'row' },
+  stageColumn: { flex: 1, flexDirection: 'column' },
+
+  topbar: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 20, paddingTop: Platform.OS === 'android' ? 40 : 16, paddingBottom: 16,
-    borderBottomWidth: 1, borderColor: 'rgba(255,255,255,0.05)',
+    paddingHorizontal: 24, paddingTop: 12,
   },
-  langPair: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  langText: { color: 'rgba(255,255,255,0.5)', fontSize: 12, fontWeight: '600' },
-  endBtn: {
-    width: 40, height: 40, borderRadius: 12,
-    backgroundColor: 'rgba(239,68,68,0.1)',
-    borderWidth: 1, borderColor: 'rgba(239,68,68,0.2)',
-    justifyContent: 'center', alignItems: 'center',
+  langPill: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  langPillText: { color: colors.muted, fontSize: 13, fontWeight: '500' },
+  timer: {
+    color: colors.muted, fontSize: 12.5,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontVariant: ['tabular-nums'],
   },
-  mainContent: { flex: 1, paddingHorizontal: 20, paddingTop: 20 },
-  livePanel: {
-    alignItems: 'center', paddingVertical: 24,
-    backgroundColor: 'rgba(57,255,20,0.04)',
-    borderRadius: 16, marginBottom: 16,
-    borderWidth: 1, borderColor: 'rgba(57,255,20,0.1)',
+
+  stageMid: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 18, paddingHorizontal: 28 },
+  orbWrap: { width: 148, height: 148, alignItems: 'center', justifyContent: 'center' },
+  ring: {
+    position: 'absolute', width: 148, height: 148, borderRadius: 74,
+    borderWidth: 1, borderColor: colors.signalDim,
   },
-  barsRow: {
-    flexDirection: 'row', alignItems: 'center', height: 64, marginBottom: 12,
+  ringIdle: { borderColor: colors.hair },
+  orb: {
+    width: 104, height: 104, borderRadius: 52,
+    backgroundColor: colors.signal,
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: colors.signal, shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.4, shadowRadius: 20, elevation: 8,
   },
-  audioBar: {
-    width: 5, backgroundColor: 'rgba(57,255,20,0.4)', borderRadius: 3, marginHorizontal: 3,
-  },
-  audioBarSpeaking: {
-    backgroundColor: '#39FF14',
-  },
-  listeningLabel: {
-    color: 'rgba(57,255,20,0.5)', fontSize: 10,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-    letterSpacing: 3,
-  },
-  processingPanel: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
-    paddingVertical: 16, marginBottom: 16,
-  },
-  processingLabel: {
-    color: 'rgba(255,255,255,0.5)', fontSize: 10,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-    letterSpacing: 3,
-  },
-  previewCard: {
-    backgroundColor: '#1A1A1A', borderRadius: 16, padding: 16, marginBottom: 12,
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)',
-  },
-  previewCardReceived: { borderColor: 'rgba(57,255,20,0.2)' },
-  previewLabel: {
-    color: 'rgba(255,255,255,0.3)', fontSize: 9,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-    letterSpacing: 1.5, marginBottom: 6,
-  },
-  previewText: { color: '#fff', fontSize: 15, fontWeight: '500', lineHeight: 22 },
-  emptyState: {
-    flex: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 40, gap: 12,
-  },
-  emptyTitle: {
-    color: 'rgba(255,255,255,0.35)', fontSize: 16, fontWeight: '500',
-  },
-  emptySub: {
-    color: 'rgba(255,255,255,0.2)', fontSize: 13, textAlign: 'center', lineHeight: 18,
-  },
-  transcriptSection: { flex: 1 },
-  transcriptHeader: {
-    flexDirection: 'row', alignItems: 'center',
-    marginBottom: 12,
-  },
-  transcriptHeaderText: {
-    color: 'rgba(255,255,255,0.3)', fontSize: 9,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-    letterSpacing: 1.5, flex: 1,
-  },
-  clearText: { color: 'rgba(255,255,255,0.2)', fontSize: 11 },
-  transcriptBubble: {
-    borderRadius: 14, padding: 12, marginBottom: 8,
-    borderWidth: 1,
-  },
-  bubbleSent: {
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    borderColor: 'rgba(255,255,255,0.06)',
-    marginLeft: 24,
-  },
-  bubbleReceived: {
-    backgroundColor: 'rgba(57,255,20,0.04)',
-    borderColor: 'rgba(57,255,20,0.1)',
-    marginRight: 24,
-  },
-  bubbleOriginal: {
-    color: 'rgba(255,255,255,0.45)', fontSize: 12, fontStyle: 'italic', marginBottom: 4,
-  },
-  bubbleTranslated: { color: '#fff', fontSize: 14, fontWeight: '500' },
-  bubbleTime: {
-    color: 'rgba(255,255,255,0.2)', fontSize: 10, marginTop: 6,
-  },
+  orbIdle: { backgroundColor: colors.surface3, shadowOpacity: 0 },
+  orbLetter: { fontSize: 30, fontWeight: '600', color: colors.signalOnDark },
+  statusSub: { fontSize: 15, fontWeight: '600', color: colors.warm, textAlign: 'center' },
+
+  errorState: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10, paddingHorizontal: 32 },
+  errorTitle: { fontSize: 17, fontWeight: '600', color: colors.warm },
+  errorSub: { fontSize: 13, color: colors.muted, textAlign: 'center' },
+
   controls: {
-    alignItems: 'center',
-    paddingTop: 20, paddingBottom: Platform.OS === 'ios' ? 24 : 40,
-    borderTopWidth: 1, borderColor: 'rgba(255,255,255,0.05)',
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 20,
+    paddingTop: 20, paddingBottom: Platform.OS === 'ios' ? 24 : 32,
   },
-  micWrapper: {
-    position: 'relative', justifyContent: 'center', alignItems: 'center', marginBottom: 12,
+  ctrl: {
+    width: 56, height: 56, borderRadius: 28,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.hair,
   },
-  micPulseRing: {
-    position: 'absolute', width: 90, height: 90, borderRadius: 45,
-    backgroundColor: '#39FF14',
+  ctrlMuteActive: { backgroundColor: colors.warm, borderColor: colors.warm },
+  ctrlError: { backgroundColor: colors.danger, borderColor: colors.danger },
+  ctrlTranscriptActive: { backgroundColor: colors.surface3, borderColor: colors.signalDim },
+  ctrlEnd: {
+    width: 64, height: 64, borderRadius: 32,
+    backgroundColor: colors.danger, borderColor: colors.danger,
   },
-  micBtn: {
-    width: 80, height: 80, borderRadius: 40,
-    backgroundColor: '#39FF14',
-    justifyContent: 'center', alignItems: 'center',
-    shadowColor: '#39FF14', shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.4, shadowRadius: 12, elevation: 6,
+
+  // ── Mobile transcript sheet ──────────────────────────────────────────────
+  sheet: {
+    position: 'absolute', left: 0, right: 0, bottom: 0, top: '38%',
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    borderWidth: 1, borderColor: colors.hair,
+    opacity: 0, transform: [{ translateY: 24 }],
   },
-  micBtnPaused: { backgroundColor: '#ef4444', shadowColor: '#ef4444' },
-  micBtnError: { backgroundColor: '#f97316', shadowColor: '#f97316' },
-  micBtnDisabled: { backgroundColor: 'rgba(57,255,20,0.25)', shadowOpacity: 0 },
-  micHint: {
-    color: 'rgba(255,255,255,0.25)', fontSize: 11,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-    letterSpacing: 0.5,
+  sheetOpen: { opacity: 1, transform: [{ translateY: 0 }] },
+
+  // ── Desktop persistent panel ─────────────────────────────────────────────
+  desktopPanel: {
+    width: 300, borderLeftWidth: 1, borderColor: colors.hair,
+    backgroundColor: 'rgba(0,0,0,0.12)',
   },
-  queueBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingVertical: 6, paddingHorizontal: 12,
-    backgroundColor: 'rgba(255,200,0,0.06)',
-    borderRadius: 20, borderWidth: 1,
-    borderColor: 'rgba(255,200,0,0.18)',
-    marginBottom: 10, alignSelf: 'center',
+
+  panelInner: { flex: 1 },
+  panelHead: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 18, paddingTop: 18, paddingBottom: 12,
+    borderBottomWidth: 1, borderColor: colors.hair,
   },
-  queueText: {
-    color: 'rgba(255,200,0,0.7)', fontSize: 10,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-    letterSpacing: 1.5,
+  panelTitle: { fontSize: 13, fontWeight: '600', color: colors.warm },
+  sheetClose: {
+    width: 28, height: 28, borderRadius: 14, backgroundColor: colors.surface2,
+    alignItems: 'center', justifyContent: 'center',
   },
+  logContent: { padding: 16, gap: 10 },
+  logEmpty: { color: colors.muted, fontSize: 13, textAlign: 'center', marginTop: 24 },
+  bubble: {
+    borderRadius: 14, padding: 10, marginBottom: 10, maxWidth: '86%',
+    borderWidth: 1, borderColor: colors.hair,
+  },
+  bubbleThem: { backgroundColor: colors.surface2, alignSelf: 'flex-start' },
+  bubbleYou: { backgroundColor: 'rgba(47,224,168,0.08)', borderColor: 'rgba(47,224,168,0.18)', alignSelf: 'flex-end' },
+  bubbleOriginal: { color: colors.muted, fontSize: 11.5, fontStyle: 'italic', marginBottom: 3 },
+  bubbleTranslated: { color: colors.warm, fontSize: 13.5, lineHeight: 18 },
 });
