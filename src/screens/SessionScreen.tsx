@@ -5,6 +5,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { createAudioPlayer, type AudioPlayer } from 'expo-audio';
+import * as FileSystem from 'expo-file-system';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
   useSharedValue, useAnimatedStyle,
@@ -176,8 +177,15 @@ export function SessionScreen({
           console.error('[SessionScreen] Web playback error:', e);
         }
       } else {
+        // expo-audio on Android cannot play data: URIs — write the base64
+        // audio to a temp file in the cache directory and play from its path.
+        let tempPath: string | null = null;
         try {
-          const player = createAudioPlayer({ uri: `data:audio/wav;base64,${chunk.base64}` });
+          tempPath = `${FileSystem.cacheDirectory}audio_chunk_${Date.now()}.wav`;
+          await FileSystem.writeAsStringAsync(tempPath, chunk.base64, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          const player = createAudioPlayer({ uri: tempPath });
           currentSoundRef.current = player;
           player.play();
 
@@ -195,6 +203,11 @@ export function SessionScreen({
         } catch (e) {
           console.error('[SessionScreen] Playback queue error:', e);
           currentSoundRef.current = null;
+        } finally {
+          // Clean up temp file
+          if (tempPath) {
+            FileSystem.deleteAsync(tempPath, { idempotent: true }).catch(() => {});
+          }
         }
       }
     }
