@@ -33,11 +33,25 @@ yarn-error.*
 .env
 .env.*
 .env*.local
+.env.local
+.env.development
+.env.production
+.env.staging
+backend/.env
+backend/.env.*
 
-# GCP service account keys
+# GCP / API service account keys
 backend/gcp-key.json
 *-service-account*.json
 gcp-credentials.json
+**/credentials.json
+**/*-key.json
+google-services.json
+GoogleService-Info.plist
+
+# Other sensitive configs
+secrets/
+*.secret
 
 # typescript
 *.tsbuildinfo

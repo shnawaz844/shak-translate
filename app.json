@@ -2,7 +2,7 @@
   "expo": {
     "name": "ShakTranslate",
     "slug": "shak-translate",
-    "owner": "shakfitboy",
+    "owner": "aafaqexpo",
     "scheme": "shaktranslate",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -25,7 +25,9 @@
       "permissions": [
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS",
-        "android.permission.CAMERA"
+        "android.permission.CAMERA",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
       ],
       "intentFilters": [
         {
@@ -92,7 +94,7 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "bd4bb1df-2bb0-4048-885a-d17d1ad1d41c"
+        "projectId": "1a2f50f6-af38-465c-8365-f1aa4d9a89dd"
       }
     }
   }

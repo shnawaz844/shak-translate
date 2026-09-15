@@ -1,0 +1,25 @@
+﻿# Environment & secrets
+.env
+.env.*
+.env.local
+.env.development
+.env.production
+.env.staging
+
+# GCP / API keys
+*.json
+!package.json
+!package-lock.json
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Dependencies
+node_modules/
+
+# Runtime
+*.pid
+*.seed
+*.pid.lock
