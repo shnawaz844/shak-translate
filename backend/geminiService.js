@@ -17,6 +17,21 @@ if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON && !process.env.GOOGLE_APPLI
   }
 }
 
+// ── Startup diagnostic: verify credentials file is readable ─────────────────
+const credFile = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+if (credFile) {
+  try {
+    const stat = fs.statSync(credFile);
+    const raw = fs.readFileSync(credFile, 'utf8');
+    const parsed = JSON.parse(raw);
+    console.log(`[geminiService] ✅ Credentials file OK: ${credFile} (${stat.size} bytes, project=${parsed.project_id}, client_email=${parsed.client_email})`);
+  } catch (err) {
+    console.error(`[geminiService] ❌ Credentials file UNREADABLE at "${credFile}":`, err.message);
+  }
+} else {
+  console.error('[geminiService] ❌ GOOGLE_APPLICATION_CREDENTIALS is not set!');
+}
+
 const project = process.env.GOOGLE_CLOUD_PROJECT;
 const location = process.env.GOOGLE_CLOUD_LOCATION || 'us-central1';
 
@@ -24,6 +39,8 @@ if (!project) {
   console.error('[geminiService] GOOGLE_CLOUD_PROJECT is not set!');
   process.exit(1);
 }
+
+console.log(`[geminiService] Initializing Vertex AI: project=${project}, location=${location}`);
 
 const ai = new GoogleGenAI({
   vertexai: true,

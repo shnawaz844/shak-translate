@@ -201,6 +201,30 @@ const httpServer = http.createServer(async (req, res) => {
   // ── GET /health ────────────────────────────────────────────────────────────
   if (req.method === 'GET' && req.url === '/health') { res.writeHead(200); res.end('OK'); return; }
 
+  // ── GET /gemini-test ───────────────────────────────────────────────────────
+  // Quick connectivity check: tries to open a Gemini Live session and
+  // immediately closes it, reporting success or the exact error.
+  if (req.method === 'GET' && req.url === '/gemini-test') {
+    const { warmupSession, closeSession } = require('./geminiService');
+    const testId = 'health-check-' + Date.now();
+    try {
+      await warmupSession(testId, 'host', 'English', 'Hindi', {}, {
+        onAudioChunk: () => {},
+        onTurnComplete: () => {},
+        onInterrupted: () => {},
+        onError: (e) => { console.error('[gemini-test] Error:', e.message); },
+      });
+      closeSession(testId, 'host');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, message: 'Gemini Live connection successful' }));
+    } catch (err) {
+      console.error('[gemini-test] Failed:', err.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: err.message }));
+    }
+    return;
+  }
+
   res.writeHead(404); res.end('Not found');
 });
 
