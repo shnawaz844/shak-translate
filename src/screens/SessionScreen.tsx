@@ -4,8 +4,8 @@ import {
   ScrollView, Platform, useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { createAudioPlayer, type AudioPlayer } from 'expo-audio';
-import * as FileSystem from 'expo-file-system';
+import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from 'expo-audio';
+import * as FileSystem from 'expo-file-system/legacy';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
   useSharedValue, useAnimatedStyle,
@@ -57,11 +57,39 @@ export function SessionScreen({
   const [hasError, setHasError] = useState(false);
   const [showTranscript, setShowTranscript] = useState(false);
   const [durationSec, setDurationSec] = useState(0);
+  const [isSpeakerOn, setIsSpeakerOn] = useState(true);
 
   const { width } = useWindowDimensions();
   const isDesktop = Platform.OS === 'web' && width >= DESKTOP_BREAKPOINT;
 
   const scrollRef = useRef<ScrollView>(null);
+
+  // Configure native audio mode for call: loudspeaker output, mixing, and background playback
+  useEffect(() => {
+    if (Platform.OS !== 'web') {
+      setAudioModeAsync({
+        allowsRecording: true,
+        playsInSilentMode: true,
+        shouldPlayInBackground: true,
+        interruptionMode: 'duckOthers',
+        shouldRouteThroughEarpiece: false,
+      }).catch((e) => console.warn('[SessionScreen] setAudioModeAsync error:', e));
+    }
+  }, []);
+
+  const toggleSpeaker = async () => {
+    const next = !isSpeakerOn;
+    setIsSpeakerOn(next);
+    if (Platform.OS !== 'web') {
+      await setAudioModeAsync({
+        allowsRecording: true,
+        playsInSilentMode: true,
+        shouldPlayInBackground: true,
+        interruptionMode: 'duckOthers',
+        shouldRouteThroughEarpiece: !next,
+      }).catch((e) => console.warn('[SessionScreen] toggleSpeaker error:', e));
+    }
+  };
 
   // ── Audio Playback ──────────────────────────────────────────────────────────
   const audioQueueRef = useRef<{ base64: string; index: number; text: string }[]>([]);
@@ -181,29 +209,38 @@ export function SessionScreen({
         // audio to a temp file in the cache directory and play from its path.
         let tempPath: string | null = null;
         try {
-          tempPath = `${FileSystem.cacheDirectory}audio_chunk_${Date.now()}.wav`;
+          tempPath = `${FileSystem.cacheDirectory}audio_chunk_${Date.now()}_${chunk.index}.wav`;
           await FileSystem.writeAsStringAsync(tempPath, chunk.base64, {
             encoding: FileSystem.EncodingType.Base64,
           });
           const player = createAudioPlayer({ uri: tempPath });
           currentSoundRef.current = player;
-          player.play();
 
-          // Wait for playback to finish, with a 15s timeout safety net in case
-          // didJustFinish never fires (expo-audio version differences on Android).
-          await Promise.race([
-            new Promise<void>((resolve) => {
-              const subscription = (player as any).addListener('playbackStatusUpdate', (s: any) => {
-                if (s.didJustFinish || s.isLoaded === false) {
-                  subscription.remove();
-                  resolve();
-                }
-              });
-            }),
-            new Promise<void>((resolve) => setTimeout(resolve, 15000)),
-          ]);
+          await new Promise<void>((resolve) => {
+            let timer: any = null;
+            let finished = false;
+            const finish = () => {
+              if (finished) return;
+              finished = true;
+              if (timer) clearTimeout(timer);
+              try { subscription.remove(); } catch (_) {}
+              resolve();
+            };
+            const subscription = (player as any).addListener('playbackStatusUpdate', (s: any) => {
+              if (s?.didJustFinish || s?.isLoaded === false) {
+                finish();
+              }
+            });
+            timer = setTimeout(finish, 8000);
+            try {
+              player.play();
+            } catch (err) {
+              console.warn('[SessionScreen] player.play error:', err);
+              finish();
+            }
+          });
 
-          player.remove();
+          try { player.remove(); } catch (_) {}
           currentSoundRef.current = null;
         } catch (e) {
           console.error('[SessionScreen] Playback queue error:', e);
@@ -274,7 +311,13 @@ export function SessionScreen({
   });
 
   useEffect(() => {
-    if (micError) setHasError(true);
+    if (micError) {
+      setHasError(true);
+      Alert.alert('Microphone Error', micError, [
+        { text: 'Retry', onPress: () => setHasError(false) },
+        { text: 'OK' },
+      ]);
+    }
   }, [micError]);
 
   // NOTE: this used to auto-pause partner playback the instant the local
@@ -472,6 +515,7 @@ export function SessionScreen({
           )}
 
           <View style={styles.controls}>
+            {/* Mic / Mute */}
             <TouchableOpacity
               style={[
                 styles.ctrl,
@@ -491,6 +535,22 @@ export function SessionScreen({
               />
             </TouchableOpacity>
 
+            {/* Speaker / Earpiece toggle (native only) */}
+            {Platform.OS !== 'web' && (
+              <TouchableOpacity
+                style={[styles.ctrl, isSpeakerOn && styles.ctrlSpeakerActive]}
+                onPress={toggleSpeaker}
+                activeOpacity={0.8}
+              >
+                <Feather
+                  name={isSpeakerOn ? 'volume-2' : 'volume-1'}
+                  size={22}
+                  color={isSpeakerOn ? colors.signal : colors.warm}
+                />
+              </TouchableOpacity>
+            )}
+
+            {/* End Call */}
             <TouchableOpacity style={[styles.ctrl, styles.ctrlEnd]} onPress={handleEnd} activeOpacity={0.85}>
               <Feather name="phone-off" size={24} color={colors.ink} />
             </TouchableOpacity>
@@ -578,6 +638,7 @@ const styles = StyleSheet.create({
   },
   ctrlMuteActive: { backgroundColor: colors.warm, borderColor: colors.warm },
   ctrlError: { backgroundColor: colors.danger, borderColor: colors.danger },
+  ctrlSpeakerActive: { backgroundColor: colors.surface3, borderColor: colors.signalDim },
   ctrlTranscriptActive: { backgroundColor: colors.surface3, borderColor: colors.signalDim },
   ctrlEnd: {
     width: 64, height: 64, borderRadius: 32,

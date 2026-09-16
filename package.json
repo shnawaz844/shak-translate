@@ -32,6 +32,7 @@
     "expo-splash-screen": "~57.0.9",
     "expo-status-bar": "~57.0.1",
     "expo-system-ui": "~57.0.4",
+    "expo-updates": "~57.0.22",
     "expo-web-browser": "~57.0.3",
     "http-proxy": "^1.18.1",
     "react": "19.2.3",

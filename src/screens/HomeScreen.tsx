@@ -21,6 +21,7 @@ import { StatusBadge } from '../components/StatusBadge';
 import { useAuth, useUser } from '@clerk/clerk-expo';
 import { useRef } from 'react';
 import { Image } from 'react-native';
+import { requestRecordingPermissionsAsync } from 'expo-audio';
 import { WS_URL } from '../config';
 import { colors, DESKTOP_BREAKPOINT } from '../theme';
 
@@ -119,8 +120,25 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
     }
   }, [status, sessionId, partnerLang]);
 
+  const checkMicPermission = async (): Promise<boolean> => {
+    if (Platform.OS === 'web') return true;
+    try {
+      const { granted } = await requestRecordingPermissionsAsync();
+      if (!granted) {
+        setErrorMsg('Microphone permission is required to start or join calls.');
+        return false;
+      }
+      return true;
+    } catch (e) {
+      console.warn('[HomeScreen] Permission request error:', e);
+      return true;
+    }
+  };
+
   const handleStartSession = async () => {
     setErrorMsg(null);
+    const ok = await checkMicPermission();
+    if (!ok) return;
     roleRef.current = 'host';
     await createSession(myLang, userId, speakerGender, speakerAge);
     setShowQR(true);
@@ -128,6 +146,8 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
 
   const handleScanned = async (scannedId: string) => {
     setShowScanner(false);
+    const ok = await checkMicPermission();
+    if (!ok) return;
     roleRef.current = 'guest';
     await joinSession(scannedId, myLang, userId, speakerGender, speakerAge);
   };
