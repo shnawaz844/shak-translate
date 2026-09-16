@@ -95,6 +95,14 @@ export function SessionScreen({
   const audioQueueRef = useRef<{ base64: string; index: number; text: string }[]>([]);
   const isPlayingQueueRef = useRef(false);
   const currentSoundRef = useRef<AudioPlayer | null>(null); // native only
+  const nativeAudioQueueRef = useRef<string[]>([]);
+  const isPlayingNativeRef = useRef(false);
+
+  // Echo cancellation & speaker bleed prevention:
+  // Tracks active audio playback across both platforms so the mic can be silenced
+  // while the loudspeaker is playing translated audio.
+  const isPlayingAudioRef = useRef(false);
+  const playbackEndTimeRef = useRef(0);
 
   // Audio mode (mic + speaker routing) is configured once by useAudioRecorder
   // itself when streaming starts — see src/hooks/useAudioRecorder.ts. Keeping
@@ -102,33 +110,11 @@ export function SessionScreen({
   // a screen where capture and playback run concurrently.
 
   // ── Web-only playback: Web Audio API buffer source, not expo-audio's
-  // <audio>-element-backed AudioPlayer. iOS Safari has a long-standing bug
-  // where an active getUserMedia mic stream silences ALL HTMLMediaElement
-  // ("<audio>"/"<video>") playback on the page. Our mic stays live for the
-  // whole call (see useAudioRecorder.ts), so on iPhone that bug silenced
-  // every translated reply for the entire call — the sender could be heard
-  // fine (their audio leaves via the mic, unaffected), but the listener
-  // never heard anything back even though the transcript kept updating.
-  // Web Audio buffer playback doesn't touch the <audio> element code path
-  // at all, which avoids the conflict.
+  // <audio>-element-backed AudioPlayer.
   const webPlaybackCtxRef = useRef<AudioContext | null>(null);
   const webPlaybackStateRef = useRef<{ source: AudioBufferSourceNode } | null>(null);
-  // AudioContext-clock cursor for gapless playback: each chunk is scheduled
-  // to start exactly when the previous one ends, rather than waiting for the
-  // previous chunk to actually finish playing before even starting to decode
-  // the next one. That old sequential await-then-decode pattern inserted a
-  // real, audible silence between every chunk of the same sentence — decode
-  // time isn't free, so there was always a small gap where nothing played
-  // even though the next chunk had already arrived. A real call never does
-  // that. Chunks are now pipelined: decode happens as soon as a chunk is
-  // dequeued, and playback is scheduled on the AudioContext's own clock, so
-  // consecutive chunks butt up against each other with zero gap regardless
-  // of how long decoding takes.
   const nextStartTimeRef = useRef(0);
   const pendingSourcesRef = useRef(0);
-  // Shared compressor so loudness is consistent across chunks/turns instead
-  // of each independently-generated chunk playing at its own volume — the
-  // same kind of leveling a real phone call's audio path applies.
   const webCompressorRef = useRef<DynamicsCompressorNode | null>(null);
 
   const getWebPlaybackContext = useCallback((): AudioContext => {
@@ -150,135 +136,159 @@ export function SessionScreen({
     return bytes.buffer;
   }
 
-  const processAudioQueue = useCallback(async () => {
+  // Web playback queue for streaming audio chunks
+  const processWebAudioQueue = useCallback(async () => {
     if (isPlayingQueueRef.current || audioQueueRef.current.length === 0) return;
 
     isPlayingQueueRef.current = true;
+    isPlayingAudioRef.current = true;
     setIsPlayingAudio(true);
 
-    if (Platform.OS === 'web') {
-      const ctx = getWebPlaybackContext();
-      if (ctx.state === 'suspended') await ctx.resume();
-      // If playback has fully drained since the last chunk (cursor is in the
-      // past), restart the schedule from "now" instead of from a stale time.
-      if (nextStartTimeRef.current < ctx.currentTime) nextStartTimeRef.current = ctx.currentTime;
-    }
+    const ctx = getWebPlaybackContext();
+    if (ctx.state === 'suspended') await ctx.resume();
+    if (nextStartTimeRef.current < ctx.currentTime) nextStartTimeRef.current = ctx.currentTime;
 
     while (audioQueueRef.current.length > 0) {
       audioQueueRef.current.sort((a, b) => a.index - b.index);
       const chunk = audioQueueRef.current.shift();
-      if (!chunk) continue;
+      if (!chunk || !chunk.base64) continue;
 
-      if (!chunk.base64) continue;
+      try {
+        const audioBuffer = await ctx.decodeAudioData(base64ToArrayBuffer(chunk.base64));
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuffer;
 
-      if (Platform.OS === 'web') {
-        try {
-          const ctx = getWebPlaybackContext();
-          const audioBuffer = await ctx.decodeAudioData(base64ToArrayBuffer(chunk.base64));
+        const fadeGain = ctx.createGain();
+        const FADE_S = 0.004;
+        const startAt = Math.max(nextStartTimeRef.current, ctx.currentTime);
+        const endAt = startAt + audioBuffer.duration;
+        fadeGain.gain.setValueAtTime(0, startAt);
+        fadeGain.gain.linearRampToValueAtTime(1, startAt + FADE_S);
+        fadeGain.gain.setValueAtTime(1, Math.max(startAt + FADE_S, endAt - FADE_S));
+        fadeGain.gain.linearRampToValueAtTime(0, endAt);
+        source.connect(fadeGain);
+        fadeGain.connect(webCompressorRef.current ?? ctx.destination);
 
-          const source = ctx.createBufferSource();
-          source.buffer = audioBuffer;
-          // A brief gain ramp at each chunk's edges avoids an audible click
-          // where one independently-generated chunk's waveform doesn't quite
-          // meet the next one at zero amplitude.
-          const fadeGain = ctx.createGain();
-          const FADE_S = 0.004;
-          const startAt = Math.max(nextStartTimeRef.current, ctx.currentTime);
-          const endAt = startAt + audioBuffer.duration;
-          fadeGain.gain.setValueAtTime(0, startAt);
-          fadeGain.gain.linearRampToValueAtTime(1, startAt + FADE_S);
-          fadeGain.gain.setValueAtTime(1, Math.max(startAt + FADE_S, endAt - FADE_S));
-          fadeGain.gain.linearRampToValueAtTime(0, endAt);
-          source.connect(fadeGain);
-          fadeGain.connect(webCompressorRef.current ?? ctx.destination);
+        pendingSourcesRef.current += 1;
+        source.onended = () => {
+          pendingSourcesRef.current = Math.max(0, pendingSourcesRef.current - 1);
+          if (webPlaybackStateRef.current?.source === source) webPlaybackStateRef.current = null;
+          if (pendingSourcesRef.current === 0) {
+            isPlayingAudioRef.current = false;
+            playbackEndTimeRef.current = Date.now();
+            setIsPlayingAudio(false);
+          }
+        };
+        webPlaybackStateRef.current = { source };
+        source.start(startAt);
+        nextStartTimeRef.current = endAt;
+      } catch (e) {
+        console.error('[SessionScreen] Web playback error:', e);
+      }
+    }
 
-          pendingSourcesRef.current += 1;
-          source.onended = () => {
-            pendingSourcesRef.current = Math.max(0, pendingSourcesRef.current - 1);
-            if (webPlaybackStateRef.current?.source === source) webPlaybackStateRef.current = null;
-            if (pendingSourcesRef.current === 0) setIsPlayingAudio(false);
+    isPlayingQueueRef.current = false;
+  }, [getWebPlaybackContext]);
+
+  // Native playback queue for complete sentence WAVs
+  // Unlike feeding 150ms chunks into individual ExoPlayers (which leaks AudioTracks and
+  // stutters), native plays the complete sentence WAV delivered by translated_audio_final.
+  const processNativeAudioQueue = useCallback(async () => {
+    if (isPlayingNativeRef.current || nativeAudioQueueRef.current.length === 0) return;
+
+    isPlayingNativeRef.current = true;
+    isPlayingAudioRef.current = true;
+    setIsPlayingAudio(true);
+
+    while (nativeAudioQueueRef.current.length > 0) {
+      const base64 = nativeAudioQueueRef.current.shift();
+      if (!base64) continue;
+
+      let tempPath: string | null = null;
+      let player: AudioPlayer | null = null;
+
+      try {
+        tempPath = `${FileSystem.cacheDirectory}audio_turn_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.wav`;
+        await FileSystem.writeAsStringAsync(tempPath, base64, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+
+        player = createAudioPlayer({ uri: tempPath });
+        currentSoundRef.current = player;
+
+        await new Promise<void>((resolve) => {
+          let timeoutTimer: any = null;
+          let settled = false;
+
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            if (timeoutTimer) clearTimeout(timeoutTimer);
+            try { sub?.remove(); } catch (_) {}
+            resolve();
           };
-          webPlaybackStateRef.current = { source };
-          source.start(startAt);
-          nextStartTimeRef.current = endAt;
-        } catch (e) {
-          console.error('[SessionScreen] Web playback error:', e);
-        }
-      } else {
-        // expo-audio on Android cannot play data: URIs — write the base64
-        // audio to a temp file in the cache directory and play from its path.
-        let tempPath: string | null = null;
-        try {
-          tempPath = `${FileSystem.cacheDirectory}audio_chunk_${Date.now()}_${chunk.index}.wav`;
-          await FileSystem.writeAsStringAsync(tempPath, chunk.base64, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          const player = createAudioPlayer({ uri: tempPath });
-          currentSoundRef.current = player;
 
-          await new Promise<void>((resolve) => {
-            let timer: any = null;
-            let finished = false;
-            const finish = () => {
-              if (finished) return;
-              finished = true;
-              if (timer) clearTimeout(timer);
-              try { subscription.remove(); } catch (_) {}
-              resolve();
-            };
-            const subscription = (player as any).addListener('playbackStatusUpdate', (s: any) => {
-              if (s?.didJustFinish || s?.isLoaded === false) {
-                finish();
-              }
-            });
-            timer = setTimeout(finish, 8000);
-            try {
-              player.play();
-            } catch (err) {
-              console.warn('[SessionScreen] player.play error:', err);
+          const sub = (player as any).addListener('playbackStatusUpdate', (s: any) => {
+            if (!s) return;
+            if (s.duration && s.duration > 0 && !timeoutTimer) {
+              timeoutTimer = setTimeout(finish, Math.round(s.duration * 1000) + 1200);
+            }
+            if (s.didJustFinish) {
               finish();
             }
           });
 
-          try { player.remove(); } catch (_) {}
-          currentSoundRef.current = null;
-        } catch (e) {
-          console.error('[SessionScreen] Playback queue error:', e);
-          currentSoundRef.current = null;
-        } finally {
-          // Clean up temp file
-          if (tempPath) {
-            FileSystem.deleteAsync(tempPath, { idempotent: true }).catch(() => {});
+          timeoutTimer = setTimeout(finish, 12000);
+
+          try {
+            player?.play();
+          } catch (err) {
+            console.warn('[SessionScreen] Native player.play error:', err);
+            finish();
           }
+        });
+      } catch (e) {
+        console.error('[SessionScreen] Native playback error:', e);
+      } finally {
+        if (player) {
+          try { player.remove(); } catch (_) {}
+        }
+        currentSoundRef.current = null;
+        if (tempPath) {
+          FileSystem.deleteAsync(tempPath, { idempotent: true }).catch(() => {});
         }
       }
     }
 
-    // On web, chunks are scheduled ahead on the AudioContext clock rather
-    // than awaited to completion above, so playback continues after this
-    // loop exits — isPlayingAudio is cleared from the last source's onended
-    // instead (see pendingSourcesRef). Native's expo-audio path still awaits
-    // each chunk to actual completion, so clearing it here is correct there.
-    if (Platform.OS !== 'web') setIsPlayingAudio(false);
-    isPlayingQueueRef.current = false;
-  }, [getWebPlaybackContext]);
+    isPlayingNativeRef.current = false;
+    isPlayingAudioRef.current = false;
+    playbackEndTimeRef.current = Date.now();
+    setIsPlayingAudio(false);
+  }, []);
 
   const { status, isProcessing, sendAudioStreamChunk, endSession } = useWebSocket({
     onTranslatedAudioChunk: useCallback((payload: any) => {
       setPartnerSpeaking(false);
-      if (!payload.audioBase64 && !payload.text?.trim()) return;
-      audioQueueRef.current.push({ base64: payload.audioBase64, index: payload.index, text: payload.text });
-      processAudioQueue();
-    }, [processAudioQueue]),
+      if (Platform.OS === 'web') {
+        if (!payload.audioBase64 && !payload.text?.trim()) return;
+        audioQueueRef.current.push({ base64: payload.audioBase64, index: payload.index, text: payload.text });
+        processWebAudioQueue();
+      }
+    }, [processWebAudioQueue]),
 
-    onTranslatedAudioFinal: useCallback((original: string, translated: string) => {
+    onTranslatedAudioFinal: useCallback((original: string, translated: string, audioBase64?: string) => {
       setPartnerSpeaking(false);
-      if (translated.trim().length < 2) return;
-      setTranscript(prev => {
-        if (prev.length > 0 && prev[0].translated === translated) return prev;
-        return [{ id: `recv-${Date.now()}`, direction: 'received', original, translated, timestamp: Date.now() }, ...prev];
-      });
-    }, []),
+      if (translated.trim().length >= 2) {
+        setTranscript(prev => {
+          if (prev.length > 0 && prev[0].translated === translated) return prev;
+          return [{ id: `recv-${Date.now()}`, direction: 'received', original, translated, timestamp: Date.now() }, ...prev];
+        });
+      }
+      if (Platform.OS !== 'web' && audioBase64) {
+        nativeAudioQueueRef.current.push(audioBase64);
+        processNativeAudioQueue();
+      }
+    }, [processNativeAudioQueue]),
 
     onPartnerDisconnected: useCallback(() => {
       setPartnerSpeaking(false);
@@ -295,13 +305,16 @@ export function SessionScreen({
     onTurnRejected: useCallback(() => {}, []),
   });
 
-  // Continuous streaming: no more per-sentence stop/start. The mic stays live
-  // for the whole call on both platforms — real full duplex now relies on the
-  // platform's own echo cancellation rather than disabling recording during
-  // playback — and every captured buffer is forwarded immediately.
+  // Continuous streaming with Acoustic Echo Suppression:
+  // When partner's translated speech is playing on the loudspeaker, we suppress
+  // forwarding microphone buffers so the loudspeaker output doesn't get captured
+  // and fed back into Gemini. A 350ms decay guard allows room reverberation to settle.
   const canRecord = status === 'connected' && !isPaused && !hasError;
 
   const handleChunk = useCallback((audioBase64: string, mimeType: string) => {
+    if (isPlayingAudioRef.current || Date.now() < playbackEndTimeRef.current + 350) {
+      return;
+    }
     sendAudioStreamChunk(audioBase64, mimeType, role, sessionId);
   }, [sendAudioStreamChunk, role, sessionId]);
 
@@ -424,6 +437,9 @@ export function SessionScreen({
       if (currentSoundRef.current) {
         try { currentSoundRef.current.remove(); } catch (_) {}
       }
+      nativeAudioQueueRef.current = [];
+      isPlayingNativeRef.current = false;
+      isPlayingAudioRef.current = false;
       if (webPlaybackStateRef.current?.source) {
         try { webPlaybackStateRef.current.source.stop(); } catch (_) {}
       }

@@ -370,6 +370,7 @@ function makeSessionCallbacks(session, sessionId, role) {
         type: 'translated_audio_final',
         originalText: result.originalText,
         translatedText: result.translatedText,
+        audioBase64: result.translatedAudioBase64,
         turnId: result.turnId,
       });
       send(partnerSocket(), { type: 'lock_released' });

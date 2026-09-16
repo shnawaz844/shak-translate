@@ -6,7 +6,7 @@ export { ConnectionStatus, TranslatedAudioPayload, TranslatedAudioChunkPayload }
 interface UseWebSocketOptions {
   onTranslatedAudio?: (payload: TranslatedAudioPayload) => void;
   onTranslatedAudioChunk?: (payload: TranslatedAudioChunkPayload) => void;
-  onTranslatedAudioFinal?: (originalText: string, translatedText: string) => void;
+  onTranslatedAudioFinal?: (originalText: string, translatedText: string, audioBase64?: string) => void;
   onTranscript?: (originalText: string, translatedText: string) => void;
   onPartnerDisconnected?: () => void;
   onError?: (message: string) => void;
