@@ -108,17 +108,18 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
       .finally(() => setLoadingConvs(false));
   }, [userId]);
 
-  const { status, sessionId, partnerLang, createSession, joinSession, endSession } = useWebSocket({
+  const { status, sessionId, partnerLang, role: wsRole, createSession, joinSession, endSession } = useWebSocket({
     onError: (msg) => setErrorMsg(msg),
     onTranslatedAudio: () => { },
     onPartnerDisconnected: () => { },
   });
 
   React.useEffect(() => {
-    if (status === 'connected' && sessionId && partnerLang && roleRef.current) {
-      onSessionReady({ sessionId, role: roleRef.current, myLang, partnerLang });
+    const resolvedRole = wsRole || roleRef.current;
+    if (status === 'connected' && sessionId && partnerLang && resolvedRole) {
+      onSessionReady({ sessionId, role: resolvedRole, myLang, partnerLang });
     }
-  }, [status, sessionId, partnerLang]);
+  }, [status, sessionId, partnerLang, wsRole]);
 
   const checkMicPermission = async (): Promise<boolean> => {
     if (Platform.OS === 'web') return true;

@@ -349,6 +349,12 @@ function makeSessionCallbacks(session, sessionId, role) {
 
       send(senderSocket(), { type: 'processing_done', turnId: result.turnId });
 
+      if (rs.paused) {
+        console.log(`[server] Turn ${result.turnId} (${role}) completed while muted — suppressing delivery.`);
+        send(partnerSocket(), { type: 'lock_released' });
+        return;
+      }
+
       if (result.suppressed) {
         // Caught a script/language mismatch mid-turn (see geminiService.js's
         // scriptMismatch) — the audio was already dropped chunk-by-chunk as
@@ -486,6 +492,7 @@ wss.on('connection', (ws) => {
       const session = sessions.get(sessionId);
 
       if (!session) { send(ws, { type: 'error', message: `Session "${sessionId}" not found.` }); return; }
+      if (session.host === ws) { send(ws, { type: 'error', message: `Cannot join your own session as guest on the same connection.` }); return; }
       if (session.guest) { send(ws, { type: 'error', message: `Session "${sessionId}" already has a guest.` }); return; }
 
       session.guest = ws;
@@ -522,28 +529,30 @@ wss.on('connection', (ws) => {
     // ── FLOOR CONTROL (no-op) ────────────────────────────────────────────────
     if (type === 'claim_turn' || type === 'release_turn') return;
 
-    // ── PAUSE QUEUE (barge-in: stop delivering partner's in-flight reply) ───
+    // ── PAUSE QUEUE (mute / barge-in) ──────────────────────────────────────
     if (type === 'pause_queue') {
       const { sessionId, role } = message;
       const session = sessions.get(sessionId);
       if (!session) return;
-      if (session.roleState[role]) {
-        session.roleState[role].paused = true;
-        console.log(`[server] Paused delivery for ${role} in ${sessionId}`);
+      const senderRole = ws === session.host ? 'host' : (ws === session.guest ? 'guest' : role);
+      if (session.roleState[senderRole]) {
+        session.roleState[senderRole].paused = true;
+        console.log(`[server] Paused/muted for ${senderRole} in ${sessionId}`);
       }
       return;
     }
 
-    // ── RESUME QUEUE (barge-in over: resume delivering partner's reply) ─────
+    // ── RESUME QUEUE (unmute) ──────────────────────────────────────────────
     if (type === 'resume_queue') {
       const { sessionId, role } = message;
       const session = sessions.get(sessionId);
       if (!session) return;
-      const rs = session.roleState[role];
+      const senderRole = ws === session.host ? 'host' : (ws === session.guest ? 'guest' : role);
+      const rs = session.roleState[senderRole];
       if (rs) {
         rs.paused = false;
-        console.log(`[server] Resumed delivery for ${role} in ${sessionId}`);
-        const partnerSocket = getPartnerSocket(session, role);
+        console.log(`[server] Resumed/unmuted for ${senderRole} in ${sessionId}`);
+        const partnerSocket = getPartnerSocket(session, senderRole);
         send(partnerSocket, { type: 'queue_resumed' });
       }
       return;
@@ -554,8 +563,9 @@ wss.on('connection', (ws) => {
       const { sessionId, role } = message;
       const session = sessions.get(sessionId);
       if (!session) return;
-      if (session.roleState[role]) {
-        session.roleState[role].paused = false;
+      const senderRole = ws === session.host ? 'host' : (ws === session.guest ? 'guest' : role);
+      if (session.roleState[senderRole]) {
+        session.roleState[senderRole].paused = false;
         send(ws, { type: 'queue_cancelled' });
       }
       return;
@@ -570,7 +580,14 @@ wss.on('connection', (ws) => {
       if (!session) { send(ws, { type: 'error', message: 'Session not found.' }); return; }
       if (!session.host || !session.guest) return; // not fully connected yet — drop silently
 
-      feedAudioChunk(sessionId, role, audioBase64, mimeType);
+      // Authoritative socket-based role resolution:
+      const senderRole = ws === session.host ? 'host' : (ws === session.guest ? 'guest' : role);
+      if (!senderRole) return;
+
+      // When sender is muted/paused, drop all audio chunks immediately — never feed into Gemini!
+      if (session.roleState[senderRole]?.paused) return;
+
+      feedAudioChunk(sessionId, senderRole, audioBase64, mimeType);
       return;
     }
 

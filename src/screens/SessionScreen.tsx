@@ -54,6 +54,10 @@ export function SessionScreen({
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const [partnerSpeaking, setPartnerSpeaking] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  const isPausedRef = useRef(isPaused);
+  useEffect(() => {
+    isPausedRef.current = isPaused;
+  }, [isPaused]);
   const [hasError, setHasError] = useState(false);
   const [showTranscript, setShowTranscript] = useState(false);
   const [durationSec, setDurationSec] = useState(0);
@@ -266,7 +270,14 @@ export function SessionScreen({
     setIsPlayingAudio(false);
   }, []);
 
-  const { status, isProcessing, sendAudioStreamChunk, endSession } = useWebSocket({
+  const {
+    status,
+    isProcessing,
+    sendAudioStreamChunk,
+    sendPauseQueue,
+    sendResumeQueue,
+    endSession,
+  } = useWebSocket({
     onTranslatedAudioChunk: useCallback((payload: any) => {
       setPartnerSpeaking(false);
       if (Platform.OS === 'web') {
@@ -290,6 +301,23 @@ export function SessionScreen({
       }
     }, [processNativeAudioQueue]),
 
+    onTranscript: useCallback((original: string, translated: string) => {
+      if (translated.trim().length >= 2 || original.trim().length >= 2) {
+        setTranscript(prev => {
+          if (prev.length > 0 && prev[0].direction === 'sent' && (prev[0].original === original || prev[0].translated === translated)) {
+            return prev;
+          }
+          return [{
+            id: `sent-${Date.now()}`,
+            direction: 'sent',
+            original,
+            translated,
+            timestamp: Date.now(),
+          }, ...prev];
+        });
+      }
+    }, []),
+
     onPartnerDisconnected: useCallback(() => {
       setPartnerSpeaking(false);
       Alert.alert('Partner Disconnected', 'Your partner has left the session.', [{ text: 'OK', onPress: onEnd }]);
@@ -305,14 +333,33 @@ export function SessionScreen({
     onTurnRejected: useCallback(() => {}, []),
   });
 
+  const handleToggleMute = useCallback(() => {
+    if (hasError) {
+      setHasError(false);
+      return;
+    }
+    const nextPaused = !isPaused;
+    setIsPaused(nextPaused);
+    isPausedRef.current = nextPaused;
+
+    if (nextPaused) {
+      sendPauseQueue(role, sessionId);
+    } else {
+      sendResumeQueue(role, sessionId);
+    }
+  }, [hasError, isPaused, role, sessionId, sendPauseQueue, sendResumeQueue]);
+
   // Continuous streaming with Acoustic Echo Suppression:
   // When partner's translated speech is playing on the loudspeaker, we suppress
   // forwarding microphone buffers so the loudspeaker output doesn't get captured
-  // and fed back into Gemini. A 350ms decay guard allows room reverberation to settle.
+  // and fed back into Gemini. A 500ms decay guard allows room reverberation to settle.
   const canRecord = status === 'connected' && !isPaused && !hasError;
 
   const handleChunk = useCallback((audioBase64: string, mimeType: string) => {
-    if (isPlayingAudioRef.current || Date.now() < playbackEndTimeRef.current + 350) {
+    if (isPausedRef.current) {
+      return;
+    }
+    if (isPlayingAudioRef.current || Date.now() < playbackEndTimeRef.current + 500) {
       return;
     }
     sendAudioStreamChunk(audioBase64, mimeType, role, sessionId);
@@ -538,10 +585,7 @@ export function SessionScreen({
                 isPaused && !hasError && styles.ctrlMuteActive,
                 hasError && styles.ctrlError,
               ]}
-              onPress={() => {
-                if (hasError) setHasError(false);
-                else setIsPaused(!isPaused);
-              }}
+              onPress={handleToggleMute}
               activeOpacity={0.8}
             >
               <Feather

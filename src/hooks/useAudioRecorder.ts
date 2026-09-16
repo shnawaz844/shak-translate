@@ -127,10 +127,13 @@ export function useAudioRecorder({ enabled, onChunk }: AudioRecorderOptions) {
   const energyEmaRef = useRef(0);
   const speakingRef = useRef(false);
   const onChunkRef = useRef(onChunk);
+  const enabledRef = useRef(enabled);
 
   useEffect(() => { onChunkRef.current = onChunk; }, [onChunk]);
+  useEffect(() => { enabledRef.current = enabled; }, [enabled]);
 
   const emitChunk = useCallback((base64Data: string) => {
+    if (!enabledRef.current) return;
     onChunkRef.current(base64Data, `audio/pcm;rate=${SAMPLE_RATE}`);
 
     const bytes = base64Decode(base64Data);

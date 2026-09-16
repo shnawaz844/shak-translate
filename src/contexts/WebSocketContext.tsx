@@ -27,6 +27,7 @@ export interface TranslatedAudioChunkPayload {
 
 interface WebSocketContextType {
   status: ConnectionStatus;
+  role: 'host' | 'guest' | null;
   sessionId: string | null;
   partnerLang: string | null;
   isProcessing: boolean;
@@ -75,6 +76,7 @@ const WebSocketContext = createContext<WebSocketContextType | null>(null);
 
 export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [status, setStatus] = useState<ConnectionStatus>('idle');
+  const [role, setRole] = useState<'host' | 'guest' | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [partnerLang, setPartnerLang] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -97,11 +99,15 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     if (type === 'session_created') {
       setSessionId(message.sessionId);
+      setRole('host');
       setStatus('waiting');
     }
 
     if (type === 'session_ready') {
       setStatus('connected');
+      if (message.role) {
+        setRole(message.role);
+      }
       if (message.partnerLang) {
         setPartnerLang(message.partnerLang);
         callbacksMap.current.forEach(c => c.onSessionReadyEvent?.(message.partnerLang));
@@ -235,6 +241,7 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         ...(speakerAge !== undefined ? { speakerAge } : {}),
       });
       setSessionId(sid);
+      setRole('guest');
     } catch (e) {
       setStatus('error');
       callbacksMap.current.forEach(c => c.onError?.('Failed to connect to server.'));
@@ -297,6 +304,7 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     websocketService.send({ type: 'end_session', sessionId: sid, role });
     websocketService.disconnect();
     setStatus('idle');
+    setRole(null);
     setSessionId(null);
     setPartnerLang(null);
     setIsProcessing(false);
@@ -314,6 +322,7 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     <WebSocketContext.Provider
       value={{
         status,
+        role,
         sessionId,
         partnerLang,
         isProcessing,

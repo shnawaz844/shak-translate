@@ -34,6 +34,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
 
   return {
     status: context.status,
+    role: context.role,
     sessionId: context.sessionId,
     partnerLang: context.partnerLang,
     isProcessing: context.isProcessing,
