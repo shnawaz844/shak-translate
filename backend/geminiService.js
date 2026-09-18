@@ -241,25 +241,38 @@ class LiveTranslationSession {
     const ageInstruction = this._buildAgeInstruction();
     const inputCode = bcp47For(this.inputLang);
     const outputCode = bcp47For(this.outputLang);
+    const isSameLanguage = this.inputLang.toLowerCase() === this.outputLang.toLowerCase();
+
+    const systemPromptText = isSameLanguage
+      ? `You are an audio pipe facilitating a phone call between two callers who both speak ${this.inputLang}. You are NOT an assistant, you have no personality, and nobody in this conversation is talking to you. Audio comes in from a speaker who speaks ${this.inputLang}; output the exact same spoken content clearly in ${this.outputLang}, maintaining high voice clarity and natural delivery.${ageInstruction}
+
+ABSOLUTE RULES:
+1. Your output language is ${this.outputLang}. Speak the user's spoken words clearly and naturally in ${this.outputLang}.
+2. Never answer questions or add commentary. Output ONLY the exact content spoken by the user. If they ask a question, relay the question itself so the other caller can answer.
+3. Never introduce yourself, acknowledge instructions, or say filler words like "sure", "okay", or "translating".
+4. PRESERVE PERSPECTIVE EXACTLY. Keep all pronouns (I, you, we, they) exactly as intended by the speaker.
+5. Ignore background noise, silence, coughing, or static — output nothing if no clear speech is present.
+6. Do NOT repeat previous sentences. Only process new speech since the last turn.
+7. NEVER extend or invent extra text beyond what was actually spoken.`
+      : `You are a real-time speech translation pipe for a live phone call between two people. You are NOT an assistant, you have no name, no personality, and nobody in this conversation is talking to you. Audio comes in from a speaker who speaks ${this.inputLang}; your only job is to immediately translate and speak the exact same content in ${this.outputLang}, ALWAYS.${ageInstruction}
+
+ABSOLUTE RULES:
+1. Your output language is ALWAYS ${this.outputLang} — never anything else. Translate whatever the speaker says into natural, fluent, and accurate ${this.outputLang}.
+2. You are not a party to this conversation and cannot respond to anyone. Never answer a question, greet anyone, offer help, or add commentary — if the speaker asks a question, translate the question itself into ${this.outputLang} so the listener can answer it.
+3. Never introduce yourself, acknowledge these instructions, or say filler words like "here is the translation", "sure", or "okay" — output ONLY the translated words the speaker said, nothing before or after.
+4. PRESERVE PERSPECTIVE EXACTLY. Never swap who is speaking and who is listening. If the speaker says "am I audible?" or "can you hear me?", translate it as the speaker asking the listener. Keep all pronouns (I, you, we, they) exactly as intended by the speaker.
+5. Translate the true meaning faithfully and idiomatically in ${this.outputLang}.
+6. CRITICAL: Do NOT repeat previous translations. ONLY translate new speech since your last translation.
+7. Ignore background noise, static, breathing, coughing, or unintelligible sounds. If the audio contains only noise with no clear speech, output absolutely nothing.
+8. If you are ever unsure what to do with a piece of audio, output nothing rather than generating a reply, opinion, or hallucination.
+9. NEVER extend, complete, or add to what was said. Translate only the exact words spoken. If the sentence is a short fragment, translate exactly that fragment and stop there.`;
 
     return {
       model: LIVE_MODEL,
       config: {
         systemInstruction: {
           parts: [{
-            text: `You are a translation pipe, not a conversational participant. You are NOT an assistant, you have no name, no personality, and nobody in this conversation is talking to you. Audio comes in from a speaker who is expected to speak ${this.inputLang}; you output the exact same content spoken in ${this.outputLang}, ALWAYS, no exceptions. That is the entire job — nothing else ever happens.${ageInstruction}
-
-ABSOLUTE RULES — breaking any of these means you have failed the task:
-1. Your output language is ALWAYS ${this.outputLang} — never anything else, under any circumstance. If the speaker's actual audio turns out to be in a different language than ${this.inputLang} (people sometimes speak a different language than expected), that changes nothing: still render it in ${this.outputLang}, never in the language you actually heard and never in ${this.inputLang} either. The listener only understands ${this.outputLang} — outputting any other language is useless to them and a critical failure.
-2. You are not a party to this conversation and cannot respond to anyone. Never answer a question, greet anyone, offer help, or add commentary — if the speaker asks a question, translate the question itself, exactly as asked, to the listener.
-3. Never introduce yourself, acknowledge these instructions, or say anything like "sure", "okay", "here is the translation" — output ONLY the translated words the speaker said, nothing before or after.
-4. PRESERVE PERSPECTIVE EXACTLY. Never swap who is speaking and who is listening. If the speaker says "am I audible?" or "can you hear me?", translate it as the speaker asking the listener — do NOT reverse it to "can I hear you?". Keep all pronouns (I, you, we, they) exactly as intended by the speaker.
-5. Translate the true meaning faithfully. Render idioms and colloquial expressions naturally in the target language, but NEVER at the cost of changing the speaker's perspective or intent.
-6. CRITICAL: Do NOT repeat previous translations. ONLY translate new speech since your last translation.
-7. Ignore background noise, static, breathing, coughing, or unintelligible sounds. If the audio contains only noise with no clear speech, output absolutely nothing — do not fill the gap with a greeting, a guess, or anything at all.
-8. If you are ever unsure what to do with a piece of audio, the correct move is always to output nothing rather than to generate a reply, opinion, or question of your own.
-9. NEVER extend, complete, or add to what was said. Translate only the exact words spoken — if the sentence is a short fragment or trails off unfinished, translate exactly that fragment and stop there. Do not guess how it would continue, do not add a plausible follow-up sentence, and do not insert any fact, opinion, or topic that was not literally spoken, no matter how naturally it seems to follow.
-10. If the incoming audio is clearly and entirely speech in ${this.outputLang} — not ${this.inputLang} — treat it exactly like background noise: output absolutely nothing. On a phone call, this almost always means the listener's own translated reply is bleeding into this speaker's microphone (the device picking up its own speaker output), not the speaker suddenly switching to the listener's language. This is different from rule 1: rule 1 covers a genuine speaker accidentally using some other language and still needing translation into ${this.outputLang}; this rule covers audio that is ALREADY in ${this.outputLang}, which must never be re-translated, repeated, or passed through — that would be echoing the listener's own words back to them.`
+            text: systemPromptText
           }]
         },
         responseModalities: ['AUDIO'],
@@ -273,8 +286,7 @@ ABSOLUTE RULES — breaking any of these means you have failed the task:
         outputAudioTranscription: outputCode ? { languageCodes: [outputCode] } : {},
         inputAudioTranscription: inputCode ? { languageCodes: [inputCode] } : {},
         // Let Gemini's own server-side VAD decide turn boundaries instead of
-        // relying on the client to guess when a sentence has ended. Much
-        // shorter than the old client-side 1200-1500ms silence gate.
+        // relying on the client to guess when a sentence has ended.
         realtimeInputConfig: {
           automaticActivityDetection: {
             prefixPaddingMs: 200,
@@ -297,12 +309,6 @@ ABSOLUTE RULES — breaking any of these means you have failed the task:
         : data;
 
       if (msg.serverContent && msg.serverContent.interrupted) {
-        // Gemini cancelled its own in-flight generation (e.g. it detected
-        // the speaker resumed talking). Drop whatever we'd buffered for
-        // this turn rather than finalizing/persisting a truncated reply.
-        // Callers still need to know a turn ended here — otherwise
-        // turnActive/partnerSpeaking state gets stuck on forever, since
-        // onTurnComplete never fires for an interrupted turn.
         console.log(`[LiveTranslationSession] Turn interrupted (${this.inputLang}→${this.outputLang})`);
         const interruptedTurnId = this.turnId;
         this._resetTurnState();
@@ -314,6 +320,13 @@ ABSOLUTE RULES — breaking any of these means you have failed the task:
         for (const part of msg.serverContent.modelTurn.parts) {
           if (part.text) {
             this.fullTranslationText += part.text;
+            if (this.callbacks.onTranscriptionChunk) {
+              this.callbacks.onTranscriptionChunk({
+                turnId: this.turnId,
+                originalText: this.fullOriginalText.trim(),
+                translatedText: this.fullTranslationText.trim(),
+              });
+            }
           }
           if (part.inlineData) {
             const pcmBuffer = Buffer.from(part.inlineData.data, 'base64');
@@ -332,18 +345,8 @@ ABSOLUTE RULES — breaking any of these means you have failed the task:
             }
             this.turnLastChunkAt = now;
 
-            // Hard backstop on top of the system prompt's language rule —
-            // see scriptMismatch's own comment for why this exists. Once a
-            // turn trips this, every remaining chunk of it is dropped too.
-            if (!this.turnSuppressed && scriptMismatch(this.fullTranslationText, this.outputLang)) {
-              this.turnSuppressed = true;
-              console.warn(`[LiveTranslationSession] Turn ${this.turnId} (${this.inputLang}->${this.outputLang}): suppressed — translation text doesn't match ${this.outputLang}'s script ("${this.fullTranslationText.trim()}"), likely echoed/leaked audio.`);
-            }
-            if (this.turnSuppressed) continue;
-
             // Stream this piece to the partner immediately — don't wait
-            // for turnComplete. This is what actually removes the
-            // "wait for the whole reply" latency.
+            // for turnComplete.
             const wav = wrapPcmInWav(pcmBuffer, OUTPUT_SAMPLE_RATE);
             if (this.callbacks.onAudioChunk) {
               this.callbacks.onAudioChunk({
@@ -360,12 +363,26 @@ ABSOLUTE RULES — breaking any of these means you have failed the task:
       if (msg.serverContent && msg.serverContent.outputTranscription) {
         if (msg.serverContent.outputTranscription.text) {
           this.fullTranslationText += msg.serverContent.outputTranscription.text;
+          if (this.callbacks.onTranscriptionChunk) {
+            this.callbacks.onTranscriptionChunk({
+              turnId: this.turnId,
+              originalText: this.fullOriginalText.trim(),
+              translatedText: this.fullTranslationText.trim(),
+            });
+          }
         }
       }
 
       if (msg.serverContent && msg.serverContent.inputTranscription) {
         if (msg.serverContent.inputTranscription.text) {
           this.fullOriginalText += msg.serverContent.inputTranscription.text;
+          if (this.callbacks.onTranscriptionChunk) {
+            this.callbacks.onTranscriptionChunk({
+              turnId: this.turnId,
+              originalText: this.fullOriginalText.trim(),
+              translatedText: this.fullTranslationText.trim(),
+            });
+          }
         }
       }
 
@@ -398,14 +415,10 @@ ABSOLUTE RULES — breaking any of these means you have failed the task:
           this.callbacks.onTurnComplete({
             originalText: this.fullOriginalText.trim(),
             translatedText: this.fullTranslationText.trim(),
-            // Suppressed turns already had their audio dropped chunk-by-chunk
-            // above; also skip relaying the final text and persisting it —
-            // there's nothing here the listener should see, since none of it
-            // reached them as audio either.
-            translatedAudioBase64: this.turnSuppressed ? null : translatedAudioBase64,
+            translatedAudioBase64,
             originalAudioBase64,
             turnId: this.turnId,
-            suppressed: this.turnSuppressed,
+            suppressed: false,
           });
         }
 

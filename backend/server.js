@@ -338,7 +338,39 @@ function makeSessionCallbacks(session, sessionId, role) {
           text: chunk.text,
           turnId: chunk.turnId,
         });
+
+        if (chunk.text) {
+          send(partnerSocket(), {
+            type: 'live_subtitle',
+            speaker: 'partner',
+            translatedText: chunk.text,
+            turnId: chunk.turnId,
+            isFinal: false,
+          });
+        }
       }
+    },
+
+    onTranscriptionChunk(data) {
+      if (!sessions.has(sessionId) || rs.paused) return;
+
+      send(senderSocket(), {
+        type: 'live_subtitle',
+        speaker: 'self',
+        originalText: data.originalText,
+        translatedText: data.translatedText,
+        turnId: data.turnId,
+        isFinal: false,
+      });
+
+      send(partnerSocket(), {
+        type: 'live_subtitle',
+        speaker: 'partner',
+        originalText: data.originalText,
+        translatedText: data.translatedText,
+        turnId: data.turnId,
+        isFinal: false,
+      });
     },
 
     onTurnComplete(result) {
@@ -351,17 +383,6 @@ function makeSessionCallbacks(session, sessionId, role) {
 
       if (rs.paused) {
         console.log(`[server] Turn ${result.turnId} (${role}) completed while muted — suppressing delivery.`);
-        send(partnerSocket(), { type: 'lock_released' });
-        return;
-      }
-
-      if (result.suppressed) {
-        // Caught a script/language mismatch mid-turn (see geminiService.js's
-        // scriptMismatch) — the audio was already dropped chunk-by-chunk as
-        // it streamed, so there's nothing valid to show either side. Still
-        // release the partner's lock so their UI doesn't stay stuck thinking
-        // a reply is coming.
-        console.warn(`[server] Turn ${result.turnId} (${role}) suppressed — not relaying or persisting.`);
         send(partnerSocket(), { type: 'lock_released' });
         return;
       }
@@ -380,6 +401,24 @@ function makeSessionCallbacks(session, sessionId, role) {
         turnId: result.turnId,
       });
       send(partnerSocket(), { type: 'lock_released' });
+
+      // Finalize live subtitles on both clients
+      send(senderSocket(), {
+        type: 'live_subtitle',
+        speaker: 'self',
+        originalText: result.originalText,
+        translatedText: result.translatedText,
+        turnId: result.turnId,
+        isFinal: true,
+      });
+      send(partnerSocket(), {
+        type: 'live_subtitle',
+        speaker: 'partner',
+        originalText: result.originalText,
+        translatedText: result.translatedText,
+        turnId: result.turnId,
+        isFinal: true,
+      });
 
       const senderUserId = role === 'host' ? session.hostUserId : session.guestUserId;
       if (senderUserId && (result.originalText || result.translatedText)) {
@@ -403,12 +442,10 @@ function makeSessionCallbacks(session, sessionId, role) {
       rs.turnActive = false;
       console.log(`[LATENCY][server] Turn ${turnId} (${role}): interrupted, resetting turn state`);
 
-      // Without this, the partner's client would be stuck thinking we're
-      // still speaking forever (no translated_audio_final ever arrives for
-      // a discarded turn), and its own mic would stay muted if it's holding
-      // off sending audio while it thinks we're talking.
       send(senderSocket(), { type: 'processing_done', turnId });
       send(partnerSocket(), { type: 'lock_released' });
+      send(senderSocket(), { type: 'live_subtitle_clear', turnId });
+      send(partnerSocket(), { type: 'live_subtitle_clear', turnId });
     },
 
     onError(err) {
