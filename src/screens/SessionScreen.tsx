@@ -43,6 +43,14 @@ function formatDuration(totalSeconds: number): string {
   return `${m}:${s}`;
 }
 
+interface ActiveSubtitle {
+  speaker: 'self' | 'partner';
+  originalText: string;
+  translatedText: string;
+  isFinal: boolean;
+  timestamp: number;
+}
+
 export function SessionScreen({
   sessionId,
   role,
@@ -51,6 +59,7 @@ export function SessionScreen({
   onEnd,
 }: SessionScreenProps) {
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
+  const [activeSubtitle, setActiveSubtitle] = useState<ActiveSubtitle | null>(null);
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const [partnerSpeaking, setPartnerSpeaking] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -67,19 +76,6 @@ export function SessionScreen({
   const isDesktop = Platform.OS === 'web' && width >= DESKTOP_BREAKPOINT;
 
   const scrollRef = useRef<ScrollView>(null);
-
-  // Configure native audio mode for call: loudspeaker output, mixing, and background playback
-  useEffect(() => {
-    if (Platform.OS !== 'web') {
-      setAudioModeAsync({
-        allowsRecording: true,
-        playsInSilentMode: true,
-        shouldPlayInBackground: true,
-        interruptionMode: 'duckOthers',
-        shouldRouteThroughEarpiece: false,
-      }).catch((e) => console.warn('[SessionScreen] setAudioModeAsync error:', e));
-    }
-  }, []);
 
   const toggleSpeaker = async () => {
     const next = !isSpeakerOn;
@@ -278,8 +274,37 @@ export function SessionScreen({
     sendResumeQueue,
     endSession,
   } = useWebSocket({
-    onTranslatedAudioChunk: useCallback((payload: any) => {
+    onLiveSubtitle: useCallback((payload: any) => {
+      if (payload.speaker === 'partner') {
+        setPartnerSpeaking(!payload.isFinal);
+      }
+      setActiveSubtitle(prev => {
+        const orig = payload.originalText !== undefined ? payload.originalText : (prev && prev.speaker === payload.speaker ? prev.originalText : '');
+        const trans = payload.translatedText !== undefined ? payload.translatedText : (prev && prev.speaker === payload.speaker ? prev.translatedText : '');
+        return {
+          speaker: payload.speaker,
+          originalText: orig,
+          translatedText: trans,
+          isFinal: payload.isFinal ?? false,
+          timestamp: Date.now(),
+        };
+      });
+    }, []),
+
+    onLiveSubtitleClear: useCallback(() => {
       setPartnerSpeaking(false);
+    }, []),
+
+    onTranslatedAudioChunk: useCallback((payload: any) => {
+      if (payload.text?.trim()) {
+        setActiveSubtitle(prev => ({
+          speaker: 'partner',
+          originalText: prev && prev.speaker === 'partner' ? prev.originalText : '',
+          translatedText: payload.text.trim(),
+          isFinal: false,
+          timestamp: Date.now(),
+        }));
+      }
       if (Platform.OS === 'web') {
         if (!payload.audioBase64 && !payload.text?.trim()) return;
         audioQueueRef.current.push({ base64: payload.audioBase64, index: payload.index, text: payload.text });
@@ -289,10 +314,21 @@ export function SessionScreen({
 
     onTranslatedAudioFinal: useCallback((original: string, translated: string, audioBase64?: string) => {
       setPartnerSpeaking(false);
-      if (translated.trim().length >= 2) {
+      const cleanOrig = (original || '').trim();
+      const cleanTrans = (translated || '').trim();
+      if (cleanTrans.length >= 1 || cleanOrig.length >= 1) {
         setTranscript(prev => {
-          if (prev.length > 0 && prev[0].translated === translated) return prev;
-          return [{ id: `recv-${Date.now()}`, direction: 'received', original, translated, timestamp: Date.now() }, ...prev];
+          if (prev.length > 0 && prev[0].direction === 'received' && (prev[0].translated === cleanTrans || prev[0].original === cleanOrig)) {
+            return prev;
+          }
+          return [{ id: `recv-${Date.now()}`, direction: 'received', original: cleanOrig, translated: cleanTrans, timestamp: Date.now() }, ...prev];
+        });
+        setActiveSubtitle({
+          speaker: 'partner',
+          originalText: cleanOrig,
+          translatedText: cleanTrans,
+          isFinal: true,
+          timestamp: Date.now(),
         });
       }
       if (Platform.OS !== 'web' && audioBase64) {
@@ -302,18 +338,27 @@ export function SessionScreen({
     }, [processNativeAudioQueue]),
 
     onTranscript: useCallback((original: string, translated: string) => {
-      if (translated.trim().length >= 2 || original.trim().length >= 2) {
+      const cleanOrig = (original || '').trim();
+      const cleanTrans = (translated || '').trim();
+      if (cleanTrans.length >= 1 || cleanOrig.length >= 1) {
         setTranscript(prev => {
-          if (prev.length > 0 && prev[0].direction === 'sent' && (prev[0].original === original || prev[0].translated === translated)) {
+          if (prev.length > 0 && prev[0].direction === 'sent' && (prev[0].original === cleanOrig || prev[0].translated === cleanTrans)) {
             return prev;
           }
           return [{
             id: `sent-${Date.now()}`,
             direction: 'sent',
-            original,
-            translated,
+            original: cleanOrig,
+            translated: cleanTrans,
             timestamp: Date.now(),
           }, ...prev];
+        });
+        setActiveSubtitle({
+          speaker: 'self',
+          originalText: cleanOrig,
+          translatedText: cleanTrans,
+          isFinal: true,
+          timestamp: Date.now(),
         });
       }
     }, []),
@@ -572,7 +617,54 @@ export function SessionScreen({
                     <Text style={styles.orbLetter}>{partnerInitial}</Text>
                   </Animated.View>
                 </View>
-                <Text style={styles.statusSub}>{statusLabel}</Text>
+                <Text style={styles.statusSub}>
+                  {partnerSpeaking ? 'Partner is speaking…' : isPlayingAudio ? 'Playing translation…' : statusLabel}
+                </Text>
+
+                {/* ── LIVE TEXT TRANSLATION (Real-time in-call subtitles) ── */}
+                <View style={styles.liveSubtitleCard}>
+                  {activeSubtitle && (activeSubtitle.translatedText || activeSubtitle.originalText) ? (
+                    <>
+                      <View style={styles.subtitleHeader}>
+                        <View style={[
+                          styles.speakerBadge,
+                          activeSubtitle.speaker === 'self' ? styles.speakerBadgeSelf : styles.speakerBadgePartner,
+                        ]}>
+                          <View style={[
+                            styles.badgeDot,
+                            activeSubtitle.speaker === 'self' ? styles.badgeDotSelf : styles.badgeDotPartner,
+                          ]} />
+                          <Text style={[
+                            styles.speakerBadgeText,
+                            activeSubtitle.speaker === 'self' ? styles.speakerTextSelf : styles.speakerTextPartner,
+                          ]}>
+                            {activeSubtitle.speaker === 'self' ? 'You' : 'Partner'}
+                          </Text>
+                        </View>
+                        {!activeSubtitle.isFinal && (
+                          <Text style={styles.liveIndicatorText}>Translating live…</Text>
+                        )}
+                      </View>
+
+                      {!!activeSubtitle.originalText && (
+                        <Text style={styles.subtitleOriginal} numberOfLines={2}>
+                          {activeSubtitle.originalText}
+                        </Text>
+                      )}
+
+                      <Text style={styles.subtitleTranslated} numberOfLines={3}>
+                        {activeSubtitle.translatedText || '…'}
+                      </Text>
+                    </>
+                  ) : (
+                    <View style={styles.subtitlePlaceholder}>
+                      <Feather name="mic" size={14} color={colors.muted} />
+                      <Text style={styles.placeholderText}>
+                        Speak naturally — live translation appears here
+                      </Text>
+                    </View>
+                  )}
+                </View>
               </View>
             </>
           )}
@@ -742,4 +834,103 @@ const styles = StyleSheet.create({
   bubbleYou: { backgroundColor: 'rgba(47,224,168,0.08)', borderColor: 'rgba(47,224,168,0.18)', alignSelf: 'flex-end' },
   bubbleOriginal: { color: colors.muted, fontSize: 11.5, fontStyle: 'italic', marginBottom: 3 },
   bubbleTranslated: { color: colors.warm, fontSize: 13.5, lineHeight: 18 },
+
+  // ── In-Call Live Subtitle Card ──────────────────────────────────────────
+  liveSubtitleCard: {
+    width: '100%',
+    maxWidth: 380,
+    backgroundColor: 'rgba(22, 22, 26, 0.88)',
+    borderRadius: 18,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    marginTop: 8,
+    minHeight: 100,
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 4,
+  },
+  subtitleHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  speakerBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    gap: 6,
+  },
+  speakerBadgeSelf: {
+    backgroundColor: 'rgba(47, 224, 168, 0.12)',
+    borderColor: 'rgba(47, 224, 168, 0.28)',
+    borderWidth: 1,
+  },
+  speakerBadgePartner: {
+    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+    borderColor: 'rgba(56, 189, 248, 0.28)',
+    borderWidth: 1,
+  },
+  badgeDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  badgeDotPulsing: {
+    opacity: 0.85,
+  },
+  badgeDotSelf: {
+    backgroundColor: colors.signal,
+  },
+  badgeDotPartner: {
+    backgroundColor: '#38bdf8',
+  },
+  speakerBadgeText: {
+    fontSize: 11.5,
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
+  speakerTextSelf: {
+    color: colors.signal,
+  },
+  speakerTextPartner: {
+    color: '#38bdf8',
+  },
+  liveIndicatorText: {
+    fontSize: 11,
+    color: colors.muted,
+    fontStyle: 'italic',
+  },
+  subtitleOriginal: {
+    fontSize: 12,
+    color: colors.muted,
+    fontStyle: 'italic',
+    marginBottom: 4,
+    lineHeight: 16,
+  },
+  subtitleTranslated: {
+    fontSize: 15.5,
+    fontWeight: '500',
+    color: colors.warm,
+    lineHeight: 21,
+  },
+  subtitlePlaceholder: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+  },
+  placeholderText: {
+    fontSize: 12.5,
+    color: colors.muted,
+    textAlign: 'center',
+  },
 });

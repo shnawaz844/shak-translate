@@ -25,6 +25,14 @@ export interface TranslatedAudioChunkPayload {
   turnId?: string;
 }
 
+export interface LiveSubtitlePayload {
+  speaker: 'self' | 'partner';
+  originalText?: string;
+  translatedText?: string;
+  turnId?: string;
+  isFinal?: boolean;
+}
+
 interface WebSocketContextType {
   status: ConnectionStatus;
   role: 'host' | 'guest' | null;
@@ -59,6 +67,8 @@ interface WebSocketCallbacks {
   onTranslatedAudioChunk?: (payload: TranslatedAudioChunkPayload) => void;
   onTranslatedAudioFinal?: (originalText: string, translatedText: string, audioBase64?: string) => void;
   onTranscript?: (originalText: string, translatedText: string) => void;
+  onLiveSubtitle?: (payload: LiveSubtitlePayload) => void;
+  onLiveSubtitleClear?: () => void;
   onPartnerDisconnected?: () => void;
   onError?: (message: string) => void;
   onPartnerSpeaking?: () => void;
@@ -157,6 +167,20 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       if (type === 'transcript') {
         callbacks.onTranscript?.(message.originalText, message.translatedText);
+      }
+
+      if (type === 'live_subtitle') {
+        callbacks.onLiveSubtitle?.({
+          speaker: message.speaker,
+          originalText: message.originalText,
+          translatedText: message.translatedText,
+          turnId: message.turnId,
+          isFinal: message.isFinal,
+        });
+      }
+
+      if (type === 'live_subtitle_clear') {
+        callbacks.onLiveSubtitleClear?.();
       }
 
       if (type === 'partner_disconnected') {

@@ -276,13 +276,15 @@ export function useAudioRecorder({ enabled, onChunk }: AudioRecorderOptions) {
               channels: 1,
               encoding: 'pcm_16bit',
               interval: STREAM_INTERVAL_MS,
+              keepAwake: false,
+              autoResumeAfterInterruption: true,
               // Streaming only — no local WAV file needed, the server persists
               // original/translated audio to Supabase per turn.
               output: { primary: { enabled: false } },
               ios: {
                 audioSession: {
                   category: 'PlayAndRecord',
-                  mode: 'VoiceChat',
+                  mode: 'Default',
                   categoryOptions: ['MixWithOthers', 'AllowBluetooth', 'DefaultToSpeaker'],
                 },
               },
