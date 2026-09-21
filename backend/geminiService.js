@@ -290,7 +290,10 @@ ABSOLUTE RULES:
         realtimeInputConfig: {
           automaticActivityDetection: {
             prefixPaddingMs: 200,
-            silenceDurationMs: 600,
+            // How long Gemini waits after speech ends before finalising the turn.
+            // 300ms is snappy enough for natural conversation without cutting off
+            // mid-sentence pauses. Was 600ms — the extra 300ms was pure dead latency.
+            silenceDurationMs: 300,
           },
         },
       },
