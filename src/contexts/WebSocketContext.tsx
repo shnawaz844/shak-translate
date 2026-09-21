@@ -39,6 +39,7 @@ interface WebSocketContextType {
   sessionId: string | null;
   partnerLang: string | null;
   isProcessing: boolean;
+  isGeminiReady: boolean;
   queueDepth: number;
   createSession: (lang: string, userId?: string, speakerGender?: string, speakerAge?: number) => Promise<void>;
   joinSession: (sid: string, lang: string, userId?: string, speakerGender?: string, speakerAge?: number) => Promise<void>;
@@ -90,6 +91,9 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [partnerLang, setPartnerLang] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  // True once the server confirms both Gemini Live sessions are open and ready.
+  // Audio fed before this point would be silently dropped by the server.
+  const [isGeminiReady, setIsGeminiReady] = useState(false);
   // How many of the local user's sentences are queued server-side waiting to process
   const [queueDepth, setQueueDepth] = useState(0);
 
@@ -111,10 +115,12 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setSessionId(message.sessionId);
       setRole('host');
       setStatus('waiting');
+      setIsGeminiReady(false);
     }
 
     if (type === 'session_ready') {
       setStatus('connected');
+      setIsGeminiReady(false); // reset — gemini_ready will follow once both sessions are open
       if (message.role) {
         setRole(message.role);
       }
@@ -122,6 +128,10 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setPartnerLang(message.partnerLang);
         callbacksMap.current.forEach(c => c.onSessionReadyEvent?.(message.partnerLang));
       }
+    }
+
+    if (type === 'gemini_ready') {
+      setIsGeminiReady(true);
     }
 
     if (type === 'processing_started') {
@@ -350,6 +360,7 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         sessionId,
         partnerLang,
         isProcessing,
+        isGeminiReady,
         queueDepth,
         createSession,
         joinSession,

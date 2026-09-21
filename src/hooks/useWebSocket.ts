@@ -40,6 +40,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     sessionId: context.sessionId,
     partnerLang: context.partnerLang,
     isProcessing: context.isProcessing,
+    isGeminiReady: context.isGeminiReady,
     queueDepth: context.queueDepth,
     createSession: context.createSession,
     joinSession: context.joinSession,

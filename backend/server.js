@@ -543,17 +543,33 @@ wss.on('connection', (ws) => {
       send(session.host, { type: 'session_ready', role: 'host', sessionId, partnerLang: session.guestLang });
       send(session.guest, { type: 'session_ready', role: 'guest', sessionId, partnerLang: session.hostLang });
 
-      // Open persistent Gemini Live sessions for both directions now that
-      // both voice profiles are known — they stay open for the whole call.
+      // Open persistent Gemini Live sessions for BOTH directions in parallel now
+      // that both voice profiles are known. We await both before sending gemini_ready
+      // so clients know exactly when the AI pipeline is open and audio won't be dropped.
       if (AI_TRANSLATION_ENABLED) {
-        warmupSession(
-          sessionId, 'host', session.hostLang, session.guestLang,
-          session.hostVoiceProfile || {}, makeSessionCallbacks(session, sessionId, 'host')
-        ).catch(console.error);
-        warmupSession(
-          sessionId, 'guest', session.guestLang, session.hostLang,
-          session.guestVoiceProfile || {}, makeSessionCallbacks(session, sessionId, 'guest')
-        ).catch(console.error);
+        Promise.all([
+          warmupSession(
+            sessionId, 'host', session.hostLang, session.guestLang,
+            session.hostVoiceProfile || {}, makeSessionCallbacks(session, sessionId, 'host')
+          ),
+          warmupSession(
+            sessionId, 'guest', session.guestLang, session.hostLang,
+            session.guestVoiceProfile || {}, makeSessionCallbacks(session, sessionId, 'guest')
+          ),
+        ]).then(() => {
+          // Both Gemini sessions are fully open — unblock recording on both clients
+          console.log(`[server] Both Gemini sessions ready for ${sessionId} — sending gemini_ready`);
+          send(session.host, { type: 'gemini_ready' });
+          send(session.guest, { type: 'gemini_ready' });
+        }).catch((err) => {
+          console.error(`[server] Gemini warmup failed for ${sessionId}:`, err.message);
+          send(session.host, { type: 'error', message: 'AI session failed to start: ' + err.message });
+          send(session.guest, { type: 'error', message: 'AI session failed to start: ' + err.message });
+        });
+      } else {
+        // AI disabled — ready immediately
+        send(session.host, { type: 'gemini_ready' });
+        send(session.guest, { type: 'gemini_ready' });
       }
 
       if (userId) {

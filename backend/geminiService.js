@@ -375,14 +375,15 @@ ABSOLUTE RULES:
 
       if (msg.serverContent && msg.serverContent.inputTranscription) {
         if (msg.serverContent.inputTranscription.text) {
+          // Silently accumulate the speaker's original transcription text.
+          // Do NOT emit onTranscriptionChunk here — the translated text hasn't
+          // arrived yet (inputTranscription = ASR of the speaker's words,
+          // outputTranscription = the actual translation which comes later).
+          // Firing a subtitle update now with an empty translatedText causes
+          // the subtitle card to flash the foreign-language text first, then
+          // replace it with the translation once it arrives — looking sequential
+          // rather than simultaneous. We emit once translation starts streaming.
           this.fullOriginalText += msg.serverContent.inputTranscription.text;
-          if (this.callbacks.onTranscriptionChunk) {
-            this.callbacks.onTranscriptionChunk({
-              turnId: this.turnId,
-              originalText: this.fullOriginalText.trim(),
-              translatedText: this.fullTranslationText.trim(),
-            });
-          }
         }
       }
 

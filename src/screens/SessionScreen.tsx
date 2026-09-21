@@ -269,9 +269,8 @@ export function SessionScreen({
   const {
     status,
     isProcessing,
+    isGeminiReady,
     sendAudioStreamChunk,
-    sendPauseQueue,
-    sendResumeQueue,
     endSession,
   } = useWebSocket({
     onLiveSubtitle: useCallback((payload: any) => {
@@ -386,19 +385,14 @@ export function SessionScreen({
     const nextPaused = !isPaused;
     setIsPaused(nextPaused);
     isPausedRef.current = nextPaused;
-
-    if (nextPaused) {
-      sendPauseQueue(role, sessionId);
-    } else {
-      sendResumeQueue(role, sessionId);
-    }
-  }, [hasError, isPaused, role, sessionId, sendPauseQueue, sendResumeQueue]);
+  }, [hasError, isPaused]);
 
   // Continuous streaming with Acoustic Echo Suppression:
-  // When partner's translated speech is playing on the loudspeaker, we suppress
-  // forwarding microphone buffers so the loudspeaker output doesn't get captured
-  // and fed back into Gemini. A 500ms decay guard allows room reverberation to settle.
-  const canRecord = status === 'connected' && !isPaused && !hasError;
+  // canRecord requires isGeminiReady so audio isn't fed into a session still
+  // connecting — the server would silently drop those chunks anyway.
+  // canRecord stays true on mute (isPaused) so native audio sessions/focus
+  // are never torn down; handleChunk drops outgoing mic buffers locally.
+  const canRecord = status === 'connected' && isGeminiReady && !hasError;
 
   const handleChunk = useCallback((audioBase64: string, mimeType: string) => {
     if (isPausedRef.current) {
@@ -543,7 +537,13 @@ export function SessionScreen({
 
   const partnerInitial = (partnerLang || '?').trim().charAt(0).toUpperCase();
   const isConnected = status === 'connected';
-  const statusLabel = hasError ? 'Microphone error' : isConnected ? 'In call' : 'Connecting…';
+  const statusLabel = hasError
+    ? 'Microphone error'
+    : isConnected && !isGeminiReady
+    ? 'Starting AI…'
+    : isConnected
+    ? 'In call'
+    : 'Connecting…';
 
   // isProcessing / isPlayingAudio / partnerSpeaking are intentionally not
   // wired into the stage UI below — the call screen stays one continuous
@@ -570,18 +570,23 @@ export function SessionScreen({
         {transcript.length === 0 ? (
           <Text style={styles.logEmpty}>Nothing said yet.</Text>
         ) : (
-          [...transcript].reverse().map((item) => (
-            <View
-              key={item.id}
-              style={[
-                styles.bubble,
-                item.direction === 'sent' ? styles.bubbleYou : styles.bubbleThem,
-              ]}
-            >
-              <Text style={styles.bubbleOriginal}>{item.original}</Text>
-              <Text style={styles.bubbleTranslated}>{item.translated}</Text>
-            </View>
-          ))
+          [...transcript].reverse().map((item) => {
+            const isUser = item.direction === 'sent';
+            const userLangText = isUser
+              ? (item.original || item.translated)
+              : (item.translated || item.original);
+            return (
+              <View
+                key={item.id}
+                style={[
+                  styles.bubble,
+                  isUser ? styles.bubbleYou : styles.bubbleThem,
+                ]}
+              >
+                <Text style={styles.bubbleTranslated}>{userLangText}</Text>
+              </View>
+            );
+          })
         )}
       </ScrollView>
     </View>
@@ -646,15 +651,24 @@ export function SessionScreen({
                         )}
                       </View>
 
-                      {!!activeSubtitle.originalText && (
-                        <Text style={styles.subtitleOriginal} numberOfLines={2}>
-                          {activeSubtitle.originalText}
-                        </Text>
-                      )}
-
-                      <Text style={styles.subtitleTranslated} numberOfLines={3}>
-                        {activeSubtitle.translatedText || '…'}
-                      </Text>
+                      {(() => {
+                        const isSelf = activeSubtitle.speaker === 'self';
+                        const subtitleInMyLang = isSelf
+                          ? (activeSubtitle.originalText || activeSubtitle.translatedText)
+                          : (activeSubtitle.translatedText || activeSubtitle.originalText);
+                        return (
+                          <ScrollView
+                            style={styles.subtitleScroll}
+                            contentContainerStyle={styles.subtitleScrollContent}
+                            showsVerticalScrollIndicator={true}
+                            nestedScrollEnabled={true}
+                          >
+                            <Text style={styles.subtitleTranslated}>
+                              {subtitleInMyLang || '…'}
+                            </Text>
+                          </ScrollView>
+                        );
+                      })()}
                     </>
                   ) : (
                     <View style={styles.subtitlePlaceholder}>
@@ -847,12 +861,21 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.08)',
     marginTop: 8,
     minHeight: 100,
+    maxHeight: 220,
     justifyContent: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.35,
     shadowRadius: 10,
     elevation: 4,
+  },
+  subtitleScroll: {
+    maxHeight: 150,
+    width: '100%',
+  },
+  subtitleScrollContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
   },
   subtitleHeader: {
     flexDirection: 'row',
