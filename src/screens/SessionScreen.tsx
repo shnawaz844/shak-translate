@@ -305,20 +305,11 @@ export function SessionScreen({
         }));
       }
       if (Platform.OS === 'web') {
-        // Web: stream chunks via Web Audio API for gapless playback
         if (!payload.audioBase64 && !payload.text?.trim()) return;
         audioQueueRef.current.push({ base64: payload.audioBase64, index: payload.index, text: payload.text });
         processWebAudioQueue();
-      } else {
-        // Native: stream chunks immediately so audio starts together with the
-        // subtitle text — don't wait for translated_audio_final (the full WAV),
-        // which only arrives after the entire sentence is done.
-        if (payload.audioBase64) {
-          nativeAudioQueueRef.current.push(payload.audioBase64);
-          processNativeAudioQueue();
-        }
       }
-    }, [processWebAudioQueue, processNativeAudioQueue]),
+    }, [processWebAudioQueue]),
 
     onTranslatedAudioFinal: useCallback((original: string, translated: string, audioBase64?: string) => {
       setPartnerSpeaking(false);
@@ -339,11 +330,11 @@ export function SessionScreen({
           timestamp: Date.now(),
         });
       }
-      // Native audio is already streaming chunk-by-chunk via onTranslatedAudioChunk —
-      // do NOT re-play the full assembled WAV here or the user hears the sentence twice.
-      // Web uses the streaming chunk path above, so nothing to do for web here either.
-      void audioBase64;
-    }, []),
+      if (Platform.OS !== 'web' && audioBase64) {
+        nativeAudioQueueRef.current.push(audioBase64);
+        processNativeAudioQueue();
+      }
+    }, [processNativeAudioQueue]),
 
     onTranscript: useCallback((original: string, translated: string) => {
       const cleanOrig = (original || '').trim();
@@ -407,10 +398,13 @@ export function SessionScreen({
     if (isPausedRef.current) {
       return;
     }
-    // The software AES guard (isPlayingAudioRef + 500ms post-playback blackout)
-    // has been removed. With iOS in VoiceChat mode the hardware echo canceller
-    // handles mic/speaker isolation — the software guard is not only redundant
-    // but actively causes the iOS↔iOS half-duplex deadlock (both mics silenced).
+    // Acoustic Echo Suppression: when the partner's translated audio is
+    // playing through the speaker, suppress mic input so the loudspeaker
+    // output doesn't get captured and fed back into Gemini.
+    // A 500ms decay guard allows room reverberation to settle.
+    if (isPlayingAudioRef.current || Date.now() < playbackEndTimeRef.current + 500) {
+      return;
+    }
     sendAudioStreamChunk(audioBase64, mimeType, role, sessionId);
   }, [sendAudioStreamChunk, role, sessionId]);
 

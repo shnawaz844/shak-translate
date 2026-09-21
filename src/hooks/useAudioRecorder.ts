@@ -283,15 +283,9 @@ export function useAudioRecorder({ enabled, onChunk }: AudioRecorderOptions) {
               output: { primary: { enabled: false } },
               ios: {
                 audioSession: {
-                  // VoiceChat activates the iOS hardware echo canceller (AEC),
-                  // which allows the mic to remain open while translated audio
-                  // is playing on the speaker — the hardware handles echo/feedback.
-                  // 'Default' mode has no hardware AEC, requiring the software
-                  // AES guard in handleChunk instead, which deadlocks iOS↔iOS calls.
-                  // VoiceChat also routes to speaker by default (no need for DefaultToSpeaker).
                   category: 'PlayAndRecord',
-                  mode: 'VoiceChat',
-                  categoryOptions: ['AllowBluetooth', 'AllowBluetoothA2DP'],
+                  mode: 'Default',
+                  categoryOptions: ['MixWithOthers', 'AllowBluetooth', 'DefaultToSpeaker'],
                 },
               },
               android: { audioFocusStrategy: 'communication' },
