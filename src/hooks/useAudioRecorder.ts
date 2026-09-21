@@ -284,8 +284,13 @@ export function useAudioRecorder({ enabled, onChunk }: AudioRecorderOptions) {
               ios: {
                 audioSession: {
                   category: 'PlayAndRecord',
-                  mode: 'Default',
-                  categoryOptions: ['MixWithOthers', 'AllowBluetooth', 'DefaultToSpeaker'],
+                  // VoiceChat mode enables iOS hardware AEC (echo canceller).
+                  // This allows the mic to remain open while translated audio
+                  // plays — hardware removes any speaker bleed from mic input.
+                  // DefaultToSpeaker keeps audio on the loudspeaker (not earpiece).
+                  // This is the standard config used by Twilio, Agora, etc.
+                  mode: 'VoiceChat',
+                  categoryOptions: ['AllowBluetooth', 'DefaultToSpeaker'],
                 },
               },
               android: { audioFocusStrategy: 'communication' },

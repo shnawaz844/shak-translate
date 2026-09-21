@@ -398,11 +398,12 @@ export function SessionScreen({
     if (isPausedRef.current) {
       return;
     }
-    // Acoustic Echo Suppression: when the partner's translated audio is
-    // playing through the speaker, suppress mic input so the loudspeaker
-    // output doesn't get captured and fed back into Gemini.
-    // A 500ms decay guard allows room reverberation to settle.
-    if (isPlayingAudioRef.current || Date.now() < playbackEndTimeRef.current + 500) {
+    // Short reverberation tail guard: VoiceChat mode's hardware AEC cancels
+    // speaker bleed from the mic during playback, so we only need a very short
+    // guard (150ms) for room reverberation after playback ends — not the old
+    // 500ms + isPlayingAudioRef full-block that silenced the iOS mic for entire
+    // sentence playbacks (3-5s), which was why iOS voice never reached Android.
+    if (Date.now() < playbackEndTimeRef.current + 150) {
       return;
     }
     sendAudioStreamChunk(audioBase64, mimeType, role, sessionId);
