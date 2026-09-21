@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { View } from 'react-native';
+import React, { useState, useEffect, useCallback } from 'react';
+import { View, ActivityIndicator } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { ClerkProvider, SignedIn, SignedOut, useUser } from '@clerk/clerk-expo';
 import { tokenCache } from './src/utils/tokenCache';
@@ -13,6 +13,12 @@ import { AudioRecordingsScreen } from './src/screens/AudioRecordingsScreen';
 import { WebSocketProvider } from './src/contexts/WebSocketContext';
 import * as WebBrowser from 'expo-web-browser';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import * as SplashScreen from 'expo-splash-screen';
+
+// Keep the splash screen visible while we load async resources (Clerk auth).
+// Without this the splash disappears immediately and shows a black screen
+// while the JS bundle boots and Clerk validates the session.
+SplashScreen.preventAutoHideAsync();
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -33,14 +39,22 @@ const publishableKey =
 function MainApp() {
   const { user, isLoaded } = useUser();
 
-  // Determine initial screen: gate on onboarding completion
+  // isLoaded = Clerk has resolved auth state (signed in or out)
   const isOnboarded = !!(user?.unsafeMetadata as any)?.onboardingComplete;
   const [screen, setScreen] = useState<AppScreen>(isOnboarded ? 'home' : 'onboarding');
   const [sessionParams, setSessionParams] = useState<SessionParams | null>(null);
   const [activeConversation, setActiveConversation] = useState<{ id: string, myUserId: string } | null>(null);
   const [activeRecordings, setActiveRecordings] = useState<{ id: string, myUserId: string, myLang: string, partnerLang: string } | null>(null);
 
-  // If Clerk is still loading the user, render nothing to avoid flicker
+  const onLayoutRootView = useCallback(async () => {
+    if (isLoaded) {
+      // Clerk is done — hide the splash now that we have real content to show.
+      await SplashScreen.hideAsync();
+    }
+  }, [isLoaded]);
+
+  // While Clerk resolves the session, keep the splash up (preventAutoHideAsync
+  // above). Return null so onLayoutRootView never fires until isLoaded=true.
   if (!isLoaded) return null;
 
   const handleSessionReady = (params: SessionParams) => {
@@ -55,6 +69,7 @@ function MainApp() {
 
   return (
     <WebSocketProvider>
+      <View style={{ flex: 1, backgroundColor: '#0A0A0A' }} onLayout={onLayoutRootView}>
       {screen === 'onboarding' && (
         <OnboardingScreen onComplete={() => setScreen('home')} />
       )}
@@ -106,6 +121,7 @@ function MainApp() {
           }}
         />
       )}
+      </View>
     </WebSocketProvider>
   );
 }
