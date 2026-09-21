@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -17,12 +17,7 @@ import * as WebBrowser from 'expo-web-browser';
 import * as Linking from 'expo-linking';
 WebBrowser.maybeCompleteAuthSession();
 
-
-
-
-
 export function AuthScreen() {
-
   const { signIn, setActive: setSignInActive, isLoaded: isSignInLoaded } = useSignIn();
   const { signUp, setActive: setSignUpActive, isLoaded: isSignUpLoaded } = useSignUp();
 
@@ -36,13 +31,23 @@ export function AuthScreen() {
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Warm up Android's Chrome Custom Tabs as soon as the auth screen appears.
+  // Cold-starting Chrome Custom Tabs takes 2-4 seconds; pre-warming it here
+  // means the browser is ready instantly when the user taps "Continue with Google".
+  useEffect(() => {
+    void WebBrowser.warmUpAsync();
+    return () => {
+      void WebBrowser.coolDownAsync();
+    };
+  }, []);
+
   const handleOAuth = useCallback(async (strategy: 'google' | 'apple') => {
     try {
       setLoading(true);
       setErrorMsg(null);
 
       const startFlow = strategy === 'google' ? startGoogleFlow : startAppleFlow;
-      const redirectUrl = Linking.createURL('/oauth-callback');
+      const redirectUrl = Linking.createURL('oauth-callback', { scheme: 'shaktranslate' });
 
       const result = await startFlow({ redirectUrl });
       const { createdSessionId, setActive, signIn, signUp } = result;

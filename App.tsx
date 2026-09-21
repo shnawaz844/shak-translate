@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { View, ActivityIndicator } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { ClerkProvider, SignedIn, SignedOut, useUser } from '@clerk/clerk-expo';
+import { ClerkProvider, useAuth, useUser } from '@clerk/clerk-expo';
 import { tokenCache } from './src/utils/tokenCache';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { SessionScreen } from './src/screens/SessionScreen';
@@ -15,13 +15,10 @@ import * as WebBrowser from 'expo-web-browser';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 
-// Keep the splash screen visible while we load async resources (Clerk auth).
-// Without this the splash disappears immediately and shows a black screen
-// while the JS bundle boots and Clerk validates the session.
-SplashScreen.preventAutoHideAsync();
+// Keep the splash screen visible while Clerk loads initial session from storage.
+SplashScreen.preventAutoHideAsync().catch(() => {});
 
 WebBrowser.maybeCompleteAuthSession();
-
 
 type AppScreen = 'onboarding' | 'home' | 'session' | 'profile' | 'conversation' | 'recordings';
 
@@ -37,25 +34,12 @@ const publishableKey =
   'pk_test_cHJvcGVyLWphZ3Vhci04NS5jbGVyay5hY2NvdW50cy5kZXYk';
 
 function MainApp() {
-  const { user, isLoaded } = useUser();
-
-  // isLoaded = Clerk has resolved auth state (signed in or out)
+  const { user } = useUser();
   const isOnboarded = !!(user?.unsafeMetadata as any)?.onboardingComplete;
   const [screen, setScreen] = useState<AppScreen>(isOnboarded ? 'home' : 'onboarding');
   const [sessionParams, setSessionParams] = useState<SessionParams | null>(null);
   const [activeConversation, setActiveConversation] = useState<{ id: string, myUserId: string } | null>(null);
   const [activeRecordings, setActiveRecordings] = useState<{ id: string, myUserId: string, myLang: string, partnerLang: string } | null>(null);
-
-  const onLayoutRootView = useCallback(async () => {
-    if (isLoaded) {
-      // Clerk is done — hide the splash now that we have real content to show.
-      await SplashScreen.hideAsync();
-    }
-  }, [isLoaded]);
-
-  // While Clerk resolves the session, keep the splash up (preventAutoHideAsync
-  // above). Return null so onLayoutRootView never fires until isLoaded=true.
-  if (!isLoaded) return null;
 
   const handleSessionReady = (params: SessionParams) => {
     setSessionParams(params);
@@ -69,60 +53,81 @@ function MainApp() {
 
   return (
     <WebSocketProvider>
-      <View style={{ flex: 1, backgroundColor: '#0A0A0A' }} onLayout={onLayoutRootView}>
-      {screen === 'onboarding' && (
-        <OnboardingScreen onComplete={() => setScreen('home')} />
-      )}
-      {screen === 'home' && (
-        <HomeScreen
-          onSessionReady={handleSessionReady}
-          onOpenProfile={() => setScreen('profile')}
-          onOpenConversation={(id, myUserId) => {
-            setActiveConversation({ id, myUserId });
-            setScreen('conversation');
-          }}
-          onOpenRecordings={(id, myUserId, myLang, partnerLang) => {
-            setActiveRecordings({ id, myUserId, myLang, partnerLang });
-            setScreen('recordings');
-          }}
-        />
-      )}
-      {screen === 'profile' && (
-        <ProfileScreen onBack={() => setScreen('home')} />
-      )}
-      {screen === 'session' && sessionParams && (
-        <SessionScreen
-          sessionId={sessionParams.sessionId}
-          role={sessionParams.role}
-          myLang={sessionParams.myLang}
-          partnerLang={sessionParams.partnerLang}
-          onEnd={handleEndSession}
-        />
-      )}
-      {screen === 'conversation' && activeConversation && (
-        <ConversationDetailScreen
-          conversationId={activeConversation.id}
-          myUserId={activeConversation.myUserId}
-          onBack={() => {
-            setActiveConversation(null);
-            setScreen('home');
-          }}
-        />
-      )}
-      {screen === 'recordings' && activeRecordings && (
-        <AudioRecordingsScreen
-          conversationId={activeRecordings.id}
-          myUserId={activeRecordings.myUserId}
-          myLang={activeRecordings.myLang}
-          partnerLang={activeRecordings.partnerLang}
-          onBack={() => {
-            setActiveRecordings(null);
-            setScreen('home');
-          }}
-        />
-      )}
+      <View style={{ flex: 1, backgroundColor: '#0A0A0A' }}>
+        {screen === 'onboarding' && (
+          <OnboardingScreen onComplete={() => setScreen('home')} />
+        )}
+        {screen === 'home' && (
+          <HomeScreen
+            onSessionReady={handleSessionReady}
+            onOpenProfile={() => setScreen('profile')}
+            onOpenConversation={(id, myUserId) => {
+              setActiveConversation({ id, myUserId });
+              setScreen('conversation');
+            }}
+            onOpenRecordings={(id, myUserId, myLang, partnerLang) => {
+              setActiveRecordings({ id, myUserId, myLang, partnerLang });
+              setScreen('recordings');
+            }}
+          />
+        )}
+        {screen === 'profile' && (
+          <ProfileScreen onBack={() => setScreen('home')} />
+        )}
+        {screen === 'session' && sessionParams && (
+          <SessionScreen
+            sessionId={sessionParams.sessionId}
+            role={sessionParams.role}
+            myLang={sessionParams.myLang}
+            partnerLang={sessionParams.partnerLang}
+            onEnd={handleEndSession}
+          />
+        )}
+        {screen === 'conversation' && activeConversation && (
+          <ConversationDetailScreen
+            conversationId={activeConversation.id}
+            myUserId={activeConversation.myUserId}
+            onBack={() => {
+              setActiveConversation(null);
+              setScreen('home');
+            }}
+          />
+        )}
+        {screen === 'recordings' && activeRecordings && (
+          <AudioRecordingsScreen
+            conversationId={activeRecordings.id}
+            myUserId={activeRecordings.myUserId}
+            myLang={activeRecordings.myLang}
+            partnerLang={activeRecordings.partnerLang}
+            onBack={() => {
+              setActiveRecordings(null);
+              setScreen('home');
+            }}
+          />
+        )}
       </View>
     </WebSocketProvider>
+  );
+}
+
+function AppNavigator() {
+  const { isLoaded, isSignedIn } = useAuth();
+
+  useEffect(() => {
+    if (isLoaded) {
+      void SplashScreen.hideAsync().catch(() => {});
+    }
+  }, [isLoaded]);
+
+  if (!isLoaded) {
+    return null;
+  }
+
+  return (
+    <>
+      <StatusBar style="light" />
+      {isSignedIn ? <MainApp /> : <AuthScreen />}
+    </>
   );
 }
 
@@ -131,13 +136,7 @@ export default function App() {
     <View style={{ flex: 1, backgroundColor: '#0A0A0A' }}>
       <SafeAreaProvider>
         <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache}>
-          <StatusBar style="light" />
-          <SignedIn>
-            <MainApp />
-          </SignedIn>
-          <SignedOut>
-            <AuthScreen />
-          </SignedOut>
+          <AppNavigator />
         </ClerkProvider>
       </SafeAreaProvider>
     </View>
