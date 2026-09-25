@@ -93,3 +93,14 @@ ShakTranslate is a real-time, two-user AI voice translation application built wi
 
 ## 📄 License
 MIT
+
+
+## BUILD COMMAND 
+
+For development = eas build --profile development --platform android  --clear-cache
+For proview = eas build --profile preview --platform android  --clear-cache *
+For Production = eas build --profile production --platform android  --clear-cache
+
+For development = eas build --profile development --platform ios  --clear-cache
+For proview = eas build --profile preview --platform ios  --clear-cache
+For Production = eas build --profile production --platform ios  --clear-cache *

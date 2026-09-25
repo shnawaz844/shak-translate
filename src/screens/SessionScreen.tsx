@@ -71,6 +71,12 @@ export function SessionScreen({
   const [showTranscript, setShowTranscript] = useState(false);
   const [durationSec, setDurationSec] = useState(0);
   const [isSpeakerOn, setIsSpeakerOn] = useState(true);
+  // Mirrors isSpeakerOn so the stable handleChunk callback can read the
+  // latest speaker-routing state without needing to be recreated.
+  const isSpeakerOnRef = useRef(isSpeakerOn);
+  useEffect(() => {
+    isSpeakerOnRef.current = isSpeakerOn;
+  }, [isSpeakerOn]);
 
   const { width } = useWindowDimensions();
   const isDesktop = Platform.OS === 'web' && width >= DESKTOP_BREAKPOINT;
@@ -213,7 +219,10 @@ export function SessionScreen({
           encoding: FileSystem.EncodingType.Base64,
         });
 
-        player = createAudioPlayer({ uri: tempPath });
+        // keepAudioSessionActive: true prevents expo-audio from calling
+        // AVAudioSession.setActive(false) when playback finishes, which was
+        // terminating the iOS mic recording session after the first sentence.
+        player = createAudioPlayer({ uri: tempPath }, { keepAudioSessionActive: true });
         currentSoundRef.current = player;
 
         await new Promise<void>((resolve) => {
@@ -398,12 +407,23 @@ export function SessionScreen({
     if (isPausedRef.current) {
       return;
     }
-    // Short reverberation tail guard: VoiceChat mode's hardware AEC cancels
-    // speaker bleed from the mic during playback, so we only need a very short
-    // guard (150ms) for room reverberation after playback ends — not the old
-    // 500ms + isPlayingAudioRef full-block that silenced the iOS mic for entire
-    // sentence playbacks (3-5s), which was why iOS voice never reached Android.
-    if (Date.now() < playbackEndTimeRef.current + 150) {
+    // ── Echo / feedback-loop suppression ────────────────────────────────────
+    // Block the mic completely while translated audio is actively playing.
+    // This is the primary fix for the speaker-on echo loop: if we let mic
+    // chunks through during playback, Gemini picks them up as new speech
+    // and translates them again — creating an infinite echo loop.
+    // Hardware AEC (VoiceChat mode on iOS) attenuates most of the bleed, but
+    // it is never perfect, especially on loudspeaker at high volume.
+    if (isPlayingAudioRef.current) {
+      return;
+    }
+    // Post-playback reverberation tail guard:
+    // On loudspeaker the audio bounces off walls for noticeably longer than
+    // on earpiece (which sits flush against the ear). 800ms covers room echo
+    // without causing the noticeable mic-clamp that the old full-block did.
+    // Earpiece keeps a short 200ms tail since hardware AEC handles the bulk.
+    const tailMs = isSpeakerOnRef.current ? 800 : 200;
+    if (Date.now() < playbackEndTimeRef.current + tailMs) {
       return;
     }
     sendAudioStreamChunk(audioBase64, mimeType, role, sessionId);

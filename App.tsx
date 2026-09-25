@@ -120,7 +120,11 @@ function AppNavigator() {
   }, [isLoaded]);
 
   if (!isLoaded) {
-    return null;
+    return (
+      <View style={{ flex: 1, backgroundColor: '#0A0A0A', justifyContent: 'center', alignItems: 'center' }}>
+        <StatusBar style="light" />
+      </View>
+    );
   }
 
   return (
@@ -132,6 +136,15 @@ function AppNavigator() {
 }
 
 export default function App() {
+  useEffect(() => {
+    // Safety guard: guarantee the native splash screen is dismissed within 1.5s
+    // even if network or Clerk session verification takes time on Android
+    const timer = setTimeout(() => {
+      void SplashScreen.hideAsync().catch(() => {});
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, []);
+
   return (
     <View style={{ flex: 1, backgroundColor: '#0A0A0A' }}>
       <SafeAreaProvider>

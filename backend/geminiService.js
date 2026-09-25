@@ -294,12 +294,6 @@ ABSOLUTE RULES:
             // 300ms is snappy enough for natural conversation without cutting off
             // mid-sentence pauses. Was 600ms — the extra 300ms was pure dead latency.
             silenceDurationMs: 300,
-            // LOW sensitivity means Gemini's VAD requires a more confident speech
-            // signal before treating audio as a new turn. This is a server-side
-            // defense against faint speaker echo (room reverberation, loudspeaker
-            // bleed) triggering a spurious new turn. The primary fix is the
-            // client-side isPlayingAudioRef guard in handleChunk.
-            startSensitivity: 'START_SENSITIVITY_LOW',
           },
         },
       },
