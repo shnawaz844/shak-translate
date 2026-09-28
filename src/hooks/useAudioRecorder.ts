@@ -261,61 +261,67 @@ export function useAudioRecorder({ enabled, onChunk }: AudioRecorderOptions) {
     const manage = async () => {
       if (enabled) {
         try {
-          if (!isRecording) {
-            const perm = await getRecordingPermissionsAsync();
-            if (!perm.granted) {
-              const req = await requestRecordingPermissionsAsync();
-              if (!req.granted) {
-                if (!cancelled) setError('Microphone permission is required to speak during calls. Please grant permission in your device settings.');
-                return;
-              }
-            }
+          // Always stop first — the isRecording flag captured in this closure
+          // can be stale if the effect re-runs quickly (reconnect / session
+          // restart), causing startRecording to be called while the native
+          // recorder is still active → "Recording is already in progress" error.
+          // Stopping when nothing is running is a silent no-op, so this is safe.
+          try { await stopRecording(); } catch (_) {}
+          if (cancelled) return;
 
-            const startNativeCapture = () =>
-              startRecording({
-                sampleRate: SAMPLE_RATE,
-                channels: 1,
-                encoding: 'pcm_16bit',
-                interval: STREAM_INTERVAL_MS,
-                keepAwake: false,
-                autoResumeAfterInterruption: true,
-                // Streaming only — no local WAV file needed, the server persists
-                // original/translated audio to Supabase per turn.
-                output: { primary: { enabled: false } },
-                ios: {
-                  audioSession: {
-                    category: 'PlayAndRecord',
-                    // VoiceChat mode enables iOS hardware AEC (echo canceller).
-                    // This allows the mic to remain open while translated audio
-                    // plays — hardware removes any speaker bleed from mic input.
-                    // DefaultToSpeaker keeps audio on the loudspeaker (not earpiece).
-                    // This is the standard config used by Twilio, Agora, etc.
-                    mode: 'VoiceChat',
-                    categoryOptions: ['AllowBluetooth', 'DefaultToSpeaker'],
-                  },
-                },
-                android: { audioFocusStrategy: 'communication' },
-                onAudioStream: handleNativeAudioStream,
-              });
-
-            try {
-              await startNativeCapture();
-            } catch (initialErr) {
-              if (cancelled) return;
-              console.warn('[useAudioRecorder] Initial startRecording failed, retrying in 300ms:', initialErr);
-              await new Promise((r) => setTimeout(r, 300));
-              if (cancelled) return;
-              await startNativeCapture();
+          const perm = await getRecordingPermissionsAsync();
+          if (!perm.granted) {
+            const req = await requestRecordingPermissionsAsync();
+            if (!req.granted) {
+              if (!cancelled) setError('Microphone permission is required to speak during calls. Please grant permission in your device settings.');
+              return;
             }
           }
+          if (cancelled) return;
+
+          const startNativeCapture = () =>
+            startRecording({
+              sampleRate: SAMPLE_RATE,
+              channels: 1,
+              encoding: 'pcm_16bit',
+              interval: STREAM_INTERVAL_MS,
+              keepAwake: false,
+              autoResumeAfterInterruption: true,
+              // Streaming only — no local WAV file needed, the server persists
+              // original/translated audio to Supabase per turn.
+              output: { primary: { enabled: false } },
+              ios: {
+                audioSession: {
+                  category: 'PlayAndRecord',
+                  // VoiceChat mode enables iOS hardware AEC (echo canceller).
+                  // This allows the mic to remain open while translated audio
+                  // plays — hardware removes any speaker bleed from mic input.
+                  // DefaultToSpeaker keeps audio on the loudspeaker (not earpiece).
+                  // This is the standard config used by Twilio, Agora, etc.
+                  mode: 'VoiceChat',
+                  categoryOptions: ['AllowBluetooth', 'DefaultToSpeaker'],
+                },
+              },
+              android: { audioFocusStrategy: 'communication' },
+              onAudioStream: handleNativeAudioStream,
+            });
+
+          try {
+            await startNativeCapture();
+          } catch (initialErr) {
+            if (cancelled) return;
+            console.warn('[useAudioRecorder] startRecording failed, retrying in 200ms:', initialErr);
+            await new Promise((r) => setTimeout(r, 200));
+            if (cancelled) return;
+            await startNativeCapture();
+          }
+
           if (!cancelled) setError(null);
         } catch (e) {
           if (!cancelled) setError(e instanceof Error ? e.message : 'Microphone error');
         }
       } else {
-        if (isRecording) {
-          try { await stopRecording(); } catch (_) {}
-        }
+        try { await stopRecording(); } catch (_) {}
         energyEmaRef.current = 0;
         speakingRef.current = false;
         setIsSpeaking(false);

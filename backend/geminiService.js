@@ -217,9 +217,9 @@ class LiveTranslationSession {
     if (this.inFlightBurstBuffers.length === 0) return;
 
     // Minimum burst size:
-    // First burst: ~200ms (9,600 bytes @ 24kHz 16-bit mono) for ultra-fast startup (<800ms).
+    // First burst: ~100ms (4,800 bytes @ 24kHz 16-bit mono) for ultra-fast startup (<700ms).
     // Subsequent bursts: ~300ms (14,400 bytes) to maintain a healthy jitter buffer.
-    const minBytes = this.audioChunkIndex === 0 ? 9600 : 14400;
+    const minBytes = this.audioChunkIndex === 0 ? 4800 : 14400;
     if (!force && this.inFlightBurstBytes < minBytes) return;
 
     const burstPcm = Buffer.concat(this.inFlightBurstBuffers);
@@ -325,9 +325,9 @@ ABSOLUTE RULES:
           automaticActivityDetection: {
             prefixPaddingMs: 200,
             // How long Gemini waits after speech ends before finalising the turn.
-            // 200ms is snappy enough for natural conversation without cutting off
-            // mid-sentence pauses, reducing conversational latency significantly.
-            silenceDurationMs: 200,
+            // 100ms is the minimum that avoids clipping mid-sentence pauses while
+            // keeping end-of-turn detection as snappy as possible.
+            silenceDurationMs: 100,
           },
         },
       },
