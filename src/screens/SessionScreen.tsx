@@ -112,6 +112,22 @@ export function SessionScreen({
   const nativePlaylistRef = useRef<AudioPlaylist | null>(null);
   const nativeTempFilesRef = useRef<string[]>([]);
   const currentNativeTurnIdRef = useRef<string | null>(null);
+  // Debounce timer that delays clearing isPlayingAudioRef so inter-chunk gaps
+  // between streaming audio bursts don't briefly reopen the mic window and
+  // let loudspeaker bleed through to Gemini (causing the echo loop).
+  const playbackEndDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const schedulePlaybackEnd = useCallback(() => {
+    if (playbackEndDebounceRef.current) clearTimeout(playbackEndDebounceRef.current);
+    // Use a longer debounce when speaker is on so room reverb tail is also covered.
+    const debounceMs = isSpeakerOnRef.current ? 600 : 300;
+    playbackEndDebounceRef.current = setTimeout(() => {
+      isPlayingAudioRef.current = false;
+      playbackEndTimeRef.current = Date.now();
+      setIsPlayingAudio(false);
+      playbackEndDebounceRef.current = null;
+    }, debounceMs);
+  }, []);
 
   useEffect(() => {
     if (Platform.OS !== 'web') {
@@ -120,9 +136,7 @@ export function SessionScreen({
         nativePlaylistRef.current = pl;
         pl.addListener('playlistStatusUpdate', (status) => {
           if (status.didJustFinish || (!status.playing && status.trackCount > 0 && status.currentIndex >= status.trackCount - 1)) {
-            isPlayingAudioRef.current = false;
-            playbackEndTimeRef.current = Date.now();
-            setIsPlayingAudio(false);
+            schedulePlaybackEnd();
           }
         });
       } catch (e) {
@@ -130,6 +144,10 @@ export function SessionScreen({
       }
     }
     return () => {
+      if (playbackEndDebounceRef.current) {
+        clearTimeout(playbackEndDebounceRef.current);
+        playbackEndDebounceRef.current = null;
+      }
       if (Platform.OS !== 'web' && nativePlaylistRef.current) {
         try { nativePlaylistRef.current.clear(); } catch (_) {}
         try { nativePlaylistRef.current.destroy(); } catch (_) {}
@@ -138,7 +156,7 @@ export function SessionScreen({
       nativeTempFilesRef.current.forEach(f => FileSystem.deleteAsync(f, { idempotent: true }).catch(() => {}));
       nativeTempFilesRef.current = [];
     };
-  }, []);
+  }, [schedulePlaybackEnd]);
 
   // Echo cancellation & speaker bleed prevention:
   // Tracks active audio playback across both platforms so the mic can be silenced
@@ -381,6 +399,11 @@ export function SessionScreen({
               encoding: FileSystem.EncodingType.Base64,
             });
 
+            // Cancel any pending end-debounce — a new chunk arrived, still playing.
+            if (playbackEndDebounceRef.current) {
+              clearTimeout(playbackEndDebounceRef.current);
+              playbackEndDebounceRef.current = null;
+            }
             isPlayingAudioRef.current = true;
             setIsPlayingAudio(true);
 
