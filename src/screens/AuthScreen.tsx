@@ -15,7 +15,7 @@ import { Feather, FontAwesome } from '@expo/vector-icons';
 import { useSignIn, useSignUp, useOAuth } from '@clerk/clerk-expo';
 import * as WebBrowser from 'expo-web-browser';
 import * as Linking from 'expo-linking';
-import { APP_NAME_LOWER } from '../config';
+import { APP_NAME_LOWER, APP_NAME_PREFIX, APP_NAME_SUFFIX } from '../config';
 WebBrowser.maybeCompleteAuthSession();
 
 export function AuthScreen() {
@@ -182,7 +182,8 @@ export function AuthScreen() {
               <Feather name="globe" size={32} color="#000" />
             </View>
             <Text style={styles.title}>
-              Shak<Text style={styles.titleGreen}>Translate</Text>
+              {APP_NAME_PREFIX}
+              {APP_NAME_SUFFIX ? <Text style={styles.titleGreen}>{APP_NAME_SUFFIX}</Text> : null}
             </Text>
             <Text style={styles.subtitle}>Sign in or create an account to continue</Text>
           </View>

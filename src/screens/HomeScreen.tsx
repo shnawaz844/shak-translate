@@ -22,7 +22,7 @@ import { useAuth, useUser } from '@clerk/clerk-expo';
 import { useRef } from 'react';
 import { Image } from 'react-native';
 import { requestRecordingPermissionsAsync } from 'expo-audio';
-import { WS_URL } from '../config';
+import { WS_URL, APP_NAME_PREFIX, APP_NAME_SUFFIX } from '../config';
 import { colors, DESKTOP_BREAKPOINT } from '../theme';
 
 interface HomeScreenProps {
@@ -173,7 +173,8 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
                 <Feather name="globe" size={20} color={colors.ink} />
               </View>
               <Text style={styles.title}>
-                Shak<Text style={styles.titleGreen}>Translate</Text>
+                {APP_NAME_PREFIX}
+                {APP_NAME_SUFFIX ? <Text style={styles.titleGreen}>{APP_NAME_SUFFIX}</Text> : null}
               </Text>
             </View>
             <View style={{ flexDirection: 'row', gap: 10 }}>
