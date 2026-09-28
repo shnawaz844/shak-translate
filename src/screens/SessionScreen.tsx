@@ -4,7 +4,13 @@ import {
   ScrollView, Platform, useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from 'expo-audio';
+import {
+  createAudioPlayer,
+  createAudioPlaylist,
+  setAudioModeAsync,
+  type AudioPlayer,
+  type AudioPlaylist,
+} from 'expo-audio';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Feather } from '@expo/vector-icons';
 import Animated, {
@@ -103,6 +109,36 @@ export function SessionScreen({
   const currentSoundRef = useRef<AudioPlayer | null>(null); // native only
   const nativeAudioQueueRef = useRef<string[]>([]);
   const isPlayingNativeRef = useRef(false);
+  const nativePlaylistRef = useRef<AudioPlaylist | null>(null);
+  const nativeTempFilesRef = useRef<string[]>([]);
+  const currentNativeTurnIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') {
+      try {
+        const pl = createAudioPlaylist({ loop: 'none', updateInterval: 200 });
+        nativePlaylistRef.current = pl;
+        pl.addListener('playlistStatusUpdate', (status) => {
+          if (status.didJustFinish || (!status.playing && status.trackCount > 0 && status.currentIndex >= status.trackCount - 1)) {
+            isPlayingAudioRef.current = false;
+            playbackEndTimeRef.current = Date.now();
+            setIsPlayingAudio(false);
+          }
+        });
+      } catch (e) {
+        console.warn('[SessionScreen] createAudioPlaylist init error:', e);
+      }
+    }
+    return () => {
+      if (Platform.OS !== 'web' && nativePlaylistRef.current) {
+        try { nativePlaylistRef.current.clear(); } catch (_) {}
+        try { nativePlaylistRef.current.destroy(); } catch (_) {}
+        nativePlaylistRef.current = null;
+      }
+      nativeTempFilesRef.current.forEach(f => FileSystem.deleteAsync(f, { idempotent: true }).catch(() => {}));
+      nativeTempFilesRef.current = [];
+    };
+  }, []);
 
   // Echo cancellation & speaker bleed prevention:
   // Tracks active audio playback across both platforms so the mic can be silenced
@@ -313,12 +349,58 @@ export function SessionScreen({
           timestamp: Date.now(),
         }));
       }
+
       if (Platform.OS === 'web') {
         if (!payload.audioBase64 && !payload.text?.trim()) return;
         audioQueueRef.current.push({ base64: payload.audioBase64, index: payload.index, text: payload.text });
         processWebAudioQueue();
+      } else {
+        // Native (iOS/Android): Stream audio bursts immediately into AudioPlaylist!
+        // Audio playback starts on chunk #1 (~500-700ms) without waiting for the full sentence.
+        if (!payload.audioBase64) return;
+
+        const turnId = payload.turnId || `turn-${Date.now()}`;
+        if (turnId !== currentNativeTurnIdRef.current) {
+          currentNativeTurnIdRef.current = turnId;
+          const pl = nativePlaylistRef.current;
+          if (pl) {
+            try { pl.clear(); } catch (_) {}
+          }
+          // Clean up old temporary files
+          const oldFiles = nativeTempFilesRef.current;
+          nativeTempFilesRef.current = [];
+          oldFiles.forEach(f => FileSystem.deleteAsync(f, { idempotent: true }).catch(() => {}));
+        }
+
+        const tempPath = `${FileSystem.cacheDirectory}turn_${turnId}_burst_${payload.index ?? 0}.wav`;
+        nativeTempFilesRef.current.push(tempPath);
+
+        void (async () => {
+          try {
+            await FileSystem.writeAsStringAsync(tempPath, payload.audioBase64, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+
+            isPlayingAudioRef.current = true;
+            setIsPlayingAudio(true);
+
+            const pl = nativePlaylistRef.current;
+            if (pl) {
+              pl.add({ uri: tempPath });
+              if (!pl.currentStatus?.playing) {
+                pl.play();
+              }
+            } else {
+              // Fallback to queue if playlist is unavailable
+              nativeAudioQueueRef.current.push(payload.audioBase64);
+              processNativeAudioQueue();
+            }
+          } catch (e) {
+            console.error('[SessionScreen] Native streaming playback error:', e);
+          }
+        })();
       }
-    }, [processWebAudioQueue]),
+    }, [processWebAudioQueue, processNativeAudioQueue]),
 
     onTranslatedAudioFinal: useCallback((original: string, translated: string, audioBase64?: string) => {
       setPartnerSpeaking(false);
@@ -339,7 +421,10 @@ export function SessionScreen({
           timestamp: Date.now(),
         });
       }
-      if (Platform.OS !== 'web' && audioBase64) {
+
+      // If native playlist is active and already streamed chunks, do NOT re-play
+      // full audioBase64 to prevent double playback. Only fall back if no streaming chunks arrived.
+      if (Platform.OS !== 'web' && audioBase64 && (!nativePlaylistRef.current || nativeTempFilesRef.current.length === 0)) {
         nativeAudioQueueRef.current.push(audioBase64);
         processNativeAudioQueue();
       }

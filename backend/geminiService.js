@@ -203,11 +203,38 @@ class LiveTranslationSession {
     this.turnFirstChunkAt = null;
     this.turnLastChunkAt = null;
     this.turnMaxGapMs = 0;
+    // In-flight audio burst accumulator for low-latency streaming without jitter.
+    this.inFlightBurstBuffers = [];
+    this.inFlightBurstBytes = 0;
     // Set once a script mismatch is detected mid-turn (see scriptMismatch)
     // and never cleared until the turn resets — once a turn is confirmed to
     // be in the wrong language, every remaining chunk of it is dropped too,
     // not just the one that tripped the check.
     this.turnSuppressed = false;
+  }
+
+  _emitBurst(force = false) {
+    if (this.inFlightBurstBuffers.length === 0) return;
+
+    // Minimum burst size:
+    // First burst: ~200ms (9,600 bytes @ 24kHz 16-bit mono) for ultra-fast startup (<800ms).
+    // Subsequent bursts: ~300ms (14,400 bytes) to maintain a healthy jitter buffer.
+    const minBytes = this.audioChunkIndex === 0 ? 9600 : 14400;
+    if (!force && this.inFlightBurstBytes < minBytes) return;
+
+    const burstPcm = Buffer.concat(this.inFlightBurstBuffers);
+    this.inFlightBurstBuffers = [];
+    this.inFlightBurstBytes = 0;
+
+    const wav = wrapPcmInWav(burstPcm, OUTPUT_SAMPLE_RATE);
+    if (this.callbacks.onAudioChunk) {
+      this.callbacks.onAudioChunk({
+        audioBase64: wav.toString('base64'),
+        index: this.audioChunkIndex++,
+        text: this.fullTranslationText.trim(),
+        turnId: this.turnId,
+      });
+    }
   }
 
   _buildVoiceName() {
@@ -291,9 +318,9 @@ ABSOLUTE RULES:
           automaticActivityDetection: {
             prefixPaddingMs: 200,
             // How long Gemini waits after speech ends before finalising the turn.
-            // 300ms is snappy enough for natural conversation without cutting off
-            // mid-sentence pauses. Was 600ms — the extra 300ms was pure dead latency.
-            silenceDurationMs: 300,
+            // 200ms is snappy enough for natural conversation without cutting off
+            // mid-sentence pauses, reducing conversational latency significantly.
+            silenceDurationMs: 200,
           },
         },
       },
@@ -334,9 +361,11 @@ ABSOLUTE RULES:
           if (part.inlineData) {
             const pcmBuffer = Buffer.from(part.inlineData.data, 'base64');
             this.outputAudioBuffers.push(pcmBuffer);
+            this.inFlightBurstBuffers.push(pcmBuffer);
+            this.inFlightBurstBytes += pcmBuffer.length;
 
             const now = Date.now();
-            if (this.audioChunkIndex === 0) {
+            if (this.audioChunkIndex === 0 && !this.turnId) {
               this.turnId = `${now}-${Math.random().toString(36).slice(2, 7)}`;
               this.turnFirstChunkAt = now;
               this.turnMaxGapMs = 0;
@@ -348,17 +377,8 @@ ABSOLUTE RULES:
             }
             this.turnLastChunkAt = now;
 
-            // Stream this piece to the partner immediately — don't wait
-            // for turnComplete.
-            const wav = wrapPcmInWav(pcmBuffer, OUTPUT_SAMPLE_RATE);
-            if (this.callbacks.onAudioChunk) {
-              this.callbacks.onAudioChunk({
-                audioBase64: wav.toString('base64'),
-                index: this.audioChunkIndex++,
-                text: this.fullTranslationText.trim(),
-                turnId: this.turnId,
-              });
-            }
+            // Emit burst as soon as we have enough audio for smooth playback (<800ms to first sound)
+            this._emitBurst(false);
           }
         }
       }
@@ -379,18 +399,14 @@ ABSOLUTE RULES:
       if (msg.serverContent && msg.serverContent.inputTranscription) {
         if (msg.serverContent.inputTranscription.text) {
           // Silently accumulate the speaker's original transcription text.
-          // Do NOT emit onTranscriptionChunk here — the translated text hasn't
-          // arrived yet (inputTranscription = ASR of the speaker's words,
-          // outputTranscription = the actual translation which comes later).
-          // Firing a subtitle update now with an empty translatedText causes
-          // the subtitle card to flash the foreign-language text first, then
-          // replace it with the translation once it arrives — looking sequential
-          // rather than simultaneous. We emit once translation starts streaming.
           this.fullOriginalText += msg.serverContent.inputTranscription.text;
         }
       }
 
       if (msg.serverContent && msg.serverContent.turnComplete) {
+        // Flush any trailing audio in the burst queue immediately
+        this._emitBurst(true);
+
         // NOTE: native-audio Live sessions are known to occasionally send a
         // premature turnComplete mid-sentence (see googleapis/js-genai#707,
         // googleapis/python-genai#2117). We can't fix that upstream bug here —
