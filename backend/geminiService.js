@@ -186,6 +186,13 @@ class LiveTranslationSession {
     this.connectPromise = null;
     this.closedByUs = false;
 
+    // Heartbeat: send silent PCM every KEEPALIVE_INTERVAL_MS while the session
+    // is open and idle (no speech). Gemini Live closes idle connections after
+    // ~60s without input — the keepalive prevents that timeout so translation
+    // resumes correctly after a long pause in conversation.
+    this._keepaliveTimer = null;
+    this._lastFeedAt = 0;
+
     this._resetTurnState();
   }
 
@@ -197,6 +204,7 @@ class LiveTranslationSession {
     this.audioChunkIndex = 0;
     // Input (the speaker's raw audio) accumulated for the in-flight turn,
     // so it can be persisted alongside the translation once the turn ends.
+    // NOTE: reset on each turn, not across reconnects — see feedAudio below.
     this.inputAudioBuffers = [];
     // Latency-diagnostic bookkeeping for the in-flight turn (see feedAudio/_onMessage).
     this.turnId = null;
@@ -211,6 +219,55 @@ class LiveTranslationSession {
     // be in the wrong language, every remaining chunk of it is dropped too,
     // not just the one that tripped the check.
     this.turnSuppressed = false;
+  }
+
+  // ── Keepalive heartbeat ───────────────────────────────────────────────────
+  // Gemini Live closes idle WebSocket connections after approximately 60s of
+  // no audio input. If both users are silent for a while (e.g. one finishes
+  // speaking, the other is listening to the translation, then neither speaks
+  // for >30s) the session gets torn down server-side. The next time the
+  // speaker opens their mouth, feedAudio → ensureConnected triggers a fresh
+  // connect, but that costs ~1-2s and the speaker's first words are dropped.
+  //
+  // Fix: while the session is open and the last real audio feed was >20s ago,
+  // send one 200ms block of silent PCM. This counts as "activity" on the
+  // Gemini side and resets its idle timer without triggering any turn or
+  // output — silence at Gemini's VAD threshold is a no-op for translation.
+  static get KEEPALIVE_INTERVAL_MS() { return 20000; } // check every 20s
+  static get KEEPALIVE_IDLE_THRESHOLD_MS() { return 20000; } // send if idle >20s
+
+  _startKeepalive() {
+    this._stopKeepalive();
+    this._keepaliveTimer = setInterval(() => {
+      this._sendKeepaliveIfNeeded();
+    }, LiveTranslationSession.KEEPALIVE_INTERVAL_MS);
+  }
+
+  _stopKeepalive() {
+    if (this._keepaliveTimer) {
+      clearInterval(this._keepaliveTimer);
+      this._keepaliveTimer = null;
+    }
+  }
+
+  _sendKeepaliveIfNeeded() {
+    if (!this.session || this.closedByUs) return;
+    const idleMs = Date.now() - this._lastFeedAt;
+    if (idleMs < LiveTranslationSession.KEEPALIVE_IDLE_THRESHOLD_MS) return;
+
+    try {
+      // 200ms of silent 16-bit PCM @ 16kHz (16000 * 0.2 * 2 = 6400 bytes, all zeros)
+      const silentPcm = Buffer.alloc(6400, 0);
+      const silentBase64 = silentPcm.toString('base64');
+      if (typeof this.session.sendRealtimeInput === 'function') {
+        this.session.sendRealtimeInput({
+          audio: { data: silentBase64, mimeType: 'audio/pcm;rate=16000' },
+        });
+        console.log(`[LiveTranslationSession] Keepalive sent (${this.inputLang}→${this.outputLang}), idleMs=${idleMs}`);
+      }
+    } catch (err) {
+      console.warn(`[LiveTranslationSession] Keepalive failed (${this.inputLang}→${this.outputLang}):`, err.message);
+    }
   }
 
   _emitBurst(force = false) {
@@ -461,12 +518,16 @@ ABSOLUTE RULES:
   _onError(err) {
     console.error(`[LiveTranslationSession] Live session error (${this.inputLang}→${this.outputLang}):`, err);
     this.session = null; // Force reconnect on next feedAudio
+    this.connectPromise = null; // Clear any in-flight connect promise so reconnect can start fresh
+    this._stopKeepalive();
     if (this.callbacks.onError) this.callbacks.onError(err);
   }
 
   _onClose(e) {
     console.log(`[LiveTranslationSession] Session closed (${this.inputLang}→${this.outputLang}):`, e?.code, e?.reason);
     this.session = null; // Will reconnect lazily on next feedAudio, unless we closed it ourselves
+    this.connectPromise = null; // Clear in-flight connect so ensureConnected can restart cleanly
+    this._stopKeepalive();
     if (!this.closedByUs && e && e.code && e.code !== 1000 && this.callbacks.onError) {
       this.callbacks.onError(new Error(`Live session closed with code ${e.code}: ${e.reason || 'Unknown error'}`));
     }
@@ -488,6 +549,8 @@ ABSOLUTE RULES:
       .then((session) => {
         this.session = session;
         this.connectPromise = null;
+        this._lastFeedAt = Date.now(); // reset idle timer on fresh connect
+        this._startKeepalive(); // start heartbeat to prevent idle timeout
         console.log(`[LiveTranslationSession] Session ready (${this.inputLang}→${this.outputLang})`);
       })
       .catch((err) => {
@@ -505,13 +568,26 @@ ABSOLUTE RULES:
    * value, since there's no per-chunk request/response boundary anymore.
    */
   async feedAudio(audioBase64, mimeType) {
-    this.inputAudioBuffers.push(Buffer.from(audioBase64, 'base64'));
+    // Only accumulate input audio for the CURRENT turn — not across reconnects.
+    // Pushing to inputAudioBuffers before ensureConnected means they grow
+    // unboundedly if the session is dead and reconnects are slow/failing,
+    // which eventually causes stalls. We accumulate after confirming the
+    // session is alive instead, and cap the buffer to 30s of audio (~200
+    // chunks @ 150ms) to prevent any runaway growth.
+    const MAX_INPUT_BUFFERS = 200;
+
     this.lastFeedAudioAt = Date.now();
+    this._lastFeedAt = Date.now(); // update idle timer for keepalive
 
     await this.ensureConnected();
 
     if (!this.session || typeof this.session.sendRealtimeInput !== 'function') {
       throw new Error('Live API connection is not available.');
+    }
+
+    // Accumulate after session is confirmed live, and cap to avoid unbounded growth.
+    if (this.inputAudioBuffers.length < MAX_INPUT_BUFFERS) {
+      this.inputAudioBuffers.push(Buffer.from(audioBase64, 'base64'));
     }
 
     this.session.sendRealtimeInput({ audio: { data: audioBase64, mimeType } });
@@ -522,10 +598,12 @@ ABSOLUTE RULES:
    */
   close() {
     this.closedByUs = true;
+    this._stopKeepalive();
     if (this.session?.conn?.close) {
       this.session.conn.close();
     }
     this.session = null;
+    this.connectPromise = null;
   }
 }
 
