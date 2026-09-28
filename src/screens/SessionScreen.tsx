@@ -502,7 +502,29 @@ export function SessionScreen({
     const nextPaused = !isPaused;
     setIsPaused(nextPaused);
     isPausedRef.current = nextPaused;
-  }, [hasError, isPaused]);
+
+    // When muting, Gemini's VAD needs to receive silence to fire turnComplete
+    // and deliver any in-flight translation to the partner. Without this, audio
+    // chunks simply stop arriving at the server — Gemini hangs waiting for more
+    // audio and the partner never hears what was already spoken.
+    // Fix: send one 300ms block of silent PCM (zeros @ 16kHz 16-bit mono)
+    // immediately on mute so VAD detects the silence and finalises the turn.
+    if (nextPaused && status === 'connected' && isGeminiReady) {
+      const SILENCE_SAMPLES = 16000 * 0.3; // 300ms @ 16kHz mono
+      const silenceBytes = new Uint8Array(SILENCE_SAMPLES * 2); // 16-bit = 2 bytes/sample, all zeros
+      // Base64-encode without Buffer/atob shims (same helper approach as useAudioRecorder)
+      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+      let b64 = '';
+      for (let i = 0; i < silenceBytes.length; i += 3) {
+        const b0 = silenceBytes[i], b1 = silenceBytes[i + 1] ?? 0, b2 = silenceBytes[i + 2] ?? 0;
+        b64 += chars[b0 >> 2];
+        b64 += chars[((b0 & 3) << 4) | (b1 >> 4)];
+        b64 += i + 1 < silenceBytes.length ? chars[((b1 & 0xf) << 2) | (b2 >> 6)] : '=';
+        b64 += i + 2 < silenceBytes.length ? chars[b2 & 0x3f] : '=';
+      }
+      sendAudioStreamChunk(b64, 'audio/pcm;rate=16000', role, sessionId);
+    }
+  }, [hasError, isPaused, status, isGeminiReady, sendAudioStreamChunk, role, sessionId]);
 
   // Continuous streaming with Acoustic Echo Suppression:
   // canRecord requires isGeminiReady so audio isn't fed into a session still
