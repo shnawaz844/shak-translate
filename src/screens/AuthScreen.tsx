@@ -15,6 +15,7 @@ import { Feather, FontAwesome } from '@expo/vector-icons';
 import { useSignIn, useSignUp, useOAuth } from '@clerk/clerk-expo';
 import * as WebBrowser from 'expo-web-browser';
 import * as Linking from 'expo-linking';
+import { APP_NAME_LOWER } from '../config';
 WebBrowser.maybeCompleteAuthSession();
 
 export function AuthScreen() {
@@ -47,7 +48,7 @@ export function AuthScreen() {
       setErrorMsg(null);
 
       const startFlow = strategy === 'google' ? startGoogleFlow : startAppleFlow;
-      const redirectUrl = Linking.createURL('oauth-callback', { scheme: 'shaktranslate' });
+      const redirectUrl = Linking.createURL('oauth-callback', { scheme: APP_NAME_LOWER });
 
       const result = await startFlow({ redirectUrl });
       const { createdSessionId, setActive, signIn, signUp } = result;

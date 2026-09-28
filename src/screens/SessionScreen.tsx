@@ -24,8 +24,9 @@ import { useAudioRecorder } from '../hooks/useAudioRecorder';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { Alert } from '../utils/alertCompat';
 import { colors, DESKTOP_BREAKPOINT } from '../theme';
+import { APP_NAME_LOWER } from '../config';
 
-const KEEP_AWAKE_TAG = 'shaktranslate-call';
+const KEEP_AWAKE_TAG = `${APP_NAME_LOWER}-call`;
 
 interface SessionScreenProps {
   sessionId: string;

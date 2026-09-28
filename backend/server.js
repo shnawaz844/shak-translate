@@ -5,6 +5,7 @@ const { v4: uuidv4 } = require('uuid');
 const { warmupSession, feedAudioChunk, closeSession } = require('./geminiService');
 const { supabase } = require('./supabaseClient');
 const { uploadAudio } = require('./storageService');
+const { APP_NAME } = require('./app-config');
 
 const PORT = process.env.PORT || 8080;
 
@@ -673,7 +674,7 @@ wss.on('connection', (ws) => {
   ws.on('error', (err) => { console.error('[server] WebSocket error:', err.message); });
 });
 
-console.log(`[server] ShakTranslate server starting on port ${PORT}`);
+console.log(`[server] ${APP_NAME} server starting on port ${PORT}`);
 httpServer.listen(PORT, () => {
   console.log(`[server] HTTP + WebSocket server listening on port ${PORT}`);
 });

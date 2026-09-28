@@ -4,6 +4,17 @@
 // (development/preview/production in eas.json) actually points at its own
 // backend and Clerk instance, instead of every build silently shipping
 // whatever was last hardcoded here for local testing.
+
+// ── App branding ─────────────────────────────────────────────────────────────
+// Re-exported from the root app-config.ts so all UI code has a single import
+// path: `import { APP_NAME, APP_NAME_PREFIX, APP_NAME_SUFFIX } from '../config'`
+export {
+  APP_NAME,
+  APP_NAME_PREFIX,
+  APP_NAME_SUFFIX,
+  APP_NAME_LOWER,
+  APP_BUNDLE_ID,
+} from '../app-config';
 const wsUrl = process.env.EXPO_PUBLIC_WS_URL;
 if (!wsUrl) {
   throw new Error('Missing EXPO_PUBLIC_WS_URL in .env');
