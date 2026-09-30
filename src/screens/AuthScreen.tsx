@@ -36,10 +36,12 @@ export function AuthScreen() {
   // Cold-starting Chrome Custom Tabs takes 2-4 seconds; pre-warming it here
   // means the browser is ready instantly when the user taps "Continue with Google".
   useEffect(() => {
-    void WebBrowser.warmUpAsync();
-    return () => {
-      void WebBrowser.coolDownAsync();
-    };
+    if (Platform.OS === 'android') {
+      void WebBrowser.warmUpAsync();
+      return () => {
+        void WebBrowser.coolDownAsync();
+      };
+    }
   }, []);
 
   const handleOAuth = useCallback(async (strategy: 'google' | 'apple') => {

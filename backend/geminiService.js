@@ -70,11 +70,20 @@ const OUTPUT_SAMPLE_RATE = 24000;
 const LANGUAGE_NAME_TO_BCP47 = {
   English: 'en-US',
   Hindi: 'hi-IN',
+  Urdu: 'ur-PK',
   Mandarin: 'zh-CN',
+  Cantonese: 'zh-HK',
+  Arabic: 'ar-SA',
+  'Arabic (Standard)': 'ar',
+  'Arabic (Saudi)': 'ar-SA',
+  'Arabic (UAE)': 'ar-AE',
+  'Arabic (Qatar)': 'ar-QA',
+  'Arabic (Kuwait)': 'ar-KW',
+  'Arabic (Oman)': 'ar-OM',
+  'Arabic (Bahrain)': 'ar-BH',
   Spanish: 'es-ES',
   French: 'fr-FR',
   German: 'de-DE',
-  Arabic: 'ar-SA',
 };
 
 function bcp47For(languageName) {
@@ -91,15 +100,32 @@ function bcp47For(languageName) {
 // and drop that audio before it reaches the listener, rather than trusting
 // the model never to slip.
 //
+// The same SCRIPT_RANGES map is also used by the PROXIMITY LANGUAGE GATE
+// (see _onMessage → inputTranscription handling below). When two users stand
+// physically nearby, each mic inevitably picks up the partner's voice in the
+// wrong language. Gemini auto-detects what was actually spoken in
+// inputTranscription; if that script is confidently NOT the user's selected
+// inputLang, the whole turn is suppressed before any audio/text is relayed —
+// preventing an infinite echo loop between the two phones.
+//
 // Limitation, by design: English/Spanish/French/German all share the Latin
 // script, so this can't tell them apart from each other — only a script
 // mismatch against Hindi (Devanagari), Arabic, or Mandarin (CJK) is
-// detectable this way. That's still exactly the failure mode that showed up
-// in testing, so it's worth having even without full language coverage.
+// detectable this way. That's still exactly the failure mode that shows up
+// in nearby-user scenarios, so it's worth having even without full coverage.
 const SCRIPT_RANGES = {
   Hindi: /[ऀ-ॿ]/u,
   Arabic: /[؀-ۿ]/u,
+  'Arabic (Standard)': /[؀-ۿ]/u,
+  'Arabic (Saudi)': /[؀-ۿ]/u,
+  'Arabic (UAE)': /[؀-ۿ]/u,
+  'Arabic (Qatar)': /[؀-ۿ]/u,
+  'Arabic (Kuwait)': /[؀-ۿ]/u,
+  'Arabic (Oman)': /[؀-ۿ]/u,
+  'Arabic (Bahrain)': /[؀-ۿ]/u,
+  Urdu: /[؀-ۿ]/u,
   Mandarin: /[一-鿿]/u,
+  Cantonese: /[一-鿿]/u,
   English: /[A-Za-z]/u,
   Spanish: /[A-Za-z]/u,
   French: /[A-Za-z]/u,
@@ -112,6 +138,12 @@ const SCRIPT_RANGES = {
  * that share a script (can't tell those apart) and never when there isn't
  * enough text yet to judge (biases toward letting audio through rather than
  * blocking real speech on a false positive).
+ *
+ * Used for BOTH:
+ *  • Output-side: checking translated text (prevents wrong-language audio
+ *    reaching the listener).
+ *  • Input-side: checking the speaker's raw inputTranscription (proximity
+ *    gate — prevents partner's leaked voice from being re-translated).
  */
 function scriptMismatch(text, expectedLang) {
   const expectedPattern = SCRIPT_RANGES[expectedLang];
@@ -219,6 +251,31 @@ class LiveTranslationSession {
     // be in the wrong language, every remaining chunk of it is dropped too,
     // not just the one that tripped the check.
     this.turnSuppressed = false;
+
+    // ── Proximity / Input-Language Gate ─────────────────────────────────────
+    // ROOT PROBLEM: Gemini sends output audio chunks BEFORE it sends
+    // inputTranscription. So naively checking inputTranscription was a race:
+    // the first burst(s) were already out before we knew what language was spoken.
+    //
+    // FIX — Hold-and-Release:
+    //   1. All output audio is accumulated in heldBurstBuffers (NOT emitted).
+    //   2. When inputTranscription arrives:
+    //      - Language matches inputLang → languageConfirmed = true,
+    //        flush heldBurstBuffers into the normal burst pipeline.
+    //      - Language MISMATCHES → inputLangGated = true, discard all held audio.
+    //   3. Safety valve: if no inputTranscription within 1500ms, auto-confirm
+    //      (prevents blocking short utterances where transcription is slow).
+    //
+    // This guarantees ZERO wrong-language audio ever reaches the partner.
+    this.inputLangGated = false;       // true → wrong language detected, discard turn
+    this.languageConfirmed = false;    // true → language verified OK, emit normally
+    this.heldBurstBuffers = [];        // audio held pending language check
+    this.heldBurstBytes = 0;
+    // Clear any safety-valve timer from a previous turn
+    if (this._langConfirmTimer) {
+      clearTimeout(this._langConfirmTimer);
+      this._langConfirmTimer = null;
+    }
   }
 
   // ── Keepalive heartbeat ───────────────────────────────────────────────────
@@ -270,8 +327,43 @@ class LiveTranslationSession {
     }
   }
 
+  /**
+   * Called once we have enough inputTranscription text to confirm the spoken
+   * language matches inputLang. Moves all held audio into the normal burst
+   * pipeline and triggers the first emission — exactly as if no hold had
+   * occurred, so latency impact is limited to the inputTranscription delay
+   * (typically 200–600ms after speech starts).
+   */
+  _confirmLanguage() {
+    if (this.languageConfirmed) return; // idempotent
+    this.languageConfirmed = true;
+    if (this._langConfirmTimer) {
+      clearTimeout(this._langConfirmTimer);
+      this._langConfirmTimer = null;
+    }
+    if (this.heldBurstBuffers.length > 0) {
+      // Move held buffers into the live burst queue
+      for (const buf of this.heldBurstBuffers) {
+        this.inFlightBurstBuffers.push(buf);
+        this.inFlightBurstBytes += buf.length;
+      }
+      this.heldBurstBuffers = [];
+      this.heldBurstBytes = 0;
+      // Trigger burst now that we have audio queued
+      this._emitBurst(false);
+    }
+  }
+
   _emitBurst(force = false) {
     if (this.inFlightBurstBuffers.length === 0) return;
+
+    // If the proximity gate or output-script guard has fired, discard all
+    // buffered burst audio immediately — never relay it to the partner.
+    if (this.inputLangGated || this.turnSuppressed) {
+      this.inFlightBurstBuffers = [];
+      this.inFlightBurstBytes = 0;
+      return;
+    }
 
     // Minimum burst size:
     // First burst: ~100ms (4,800 bytes @ 24kHz 16-bit mono) for ultra-fast startup (<700ms).
@@ -414,7 +506,8 @@ ABSOLUTE RULES:
         for (const part of msg.serverContent.modelTurn.parts) {
           if (part.text) {
             this.fullTranslationText += part.text;
-            if (this.callbacks.onTranscriptionChunk) {
+            // Skip live subtitle relay if gated or suppressed
+            if (!this.inputLangGated && !this.turnSuppressed && this.callbacks.onTranscriptionChunk) {
               this.callbacks.onTranscriptionChunk({
                 turnId: this.turnId,
                 originalText: this.fullOriginalText.trim(),
@@ -423,26 +516,48 @@ ABSOLUTE RULES:
             }
           }
           if (part.inlineData) {
+            // Gate check: if already confirmed wrong language, drop immediately.
+            if (this.inputLangGated || this.turnSuppressed) break;
+
             const pcmBuffer = Buffer.from(part.inlineData.data, 'base64');
             this.outputAudioBuffers.push(pcmBuffer);
-            this.inFlightBurstBuffers.push(pcmBuffer);
-            this.inFlightBurstBytes += pcmBuffer.length;
 
             const now = Date.now();
-            if (this.audioChunkIndex === 0 && !this.turnId) {
+            if (!this.turnId) {
               this.turnId = `${now}-${Math.random().toString(36).slice(2, 7)}`;
               this.turnFirstChunkAt = now;
               this.turnMaxGapMs = 0;
               const sinceLastFeedMs = this.lastFeedAudioAt ? now - this.lastFeedAudioAt : null;
               console.log(`[LATENCY][server] Turn ${this.turnId} (${this.inputLang}->${this.outputLang}): first Gemini audio chunk, ${sinceLastFeedMs}ms since last input chunk fed`);
+
+              // ── Safety valve ─────────────────────────────────────────────
+              // If inputTranscription never arrives (very short utterance,
+              // same-language mode, or model quirk), auto-confirm after 1500ms
+              // so we don't hold audio indefinitely.
+              this._langConfirmTimer = setTimeout(() => {
+                this._langConfirmTimer = null;
+                if (!this.languageConfirmed && !this.inputLangGated) {
+                  console.log(`[ProximityGate] Turn ${this.turnId} (${this.inputLang}->${this.outputLang}): no inputTranscription in 1500ms — auto-confirming language.`);
+                  this._confirmLanguage();
+                }
+              }, 1500);
             } else if (this.turnLastChunkAt) {
               const gap = now - this.turnLastChunkAt;
               if (gap > this.turnMaxGapMs) this.turnMaxGapMs = gap;
             }
             this.turnLastChunkAt = now;
 
-            // Emit burst as soon as we have enough audio for smooth playback (<800ms to first sound)
-            this._emitBurst(false);
+            if (this.languageConfirmed) {
+              // Language already verified — pipe directly into burst queue.
+              this.inFlightBurstBuffers.push(pcmBuffer);
+              this.inFlightBurstBytes += pcmBuffer.length;
+              this._emitBurst(false);
+            } else {
+              // Language not yet verified — hold audio until inputTranscription
+              // arrives and we can make a confident language decision.
+              this.heldBurstBuffers.push(pcmBuffer);
+              this.heldBurstBytes += pcmBuffer.length;
+            }
           }
         }
       }
@@ -450,7 +565,8 @@ ABSOLUTE RULES:
       if (msg.serverContent && msg.serverContent.outputTranscription) {
         if (msg.serverContent.outputTranscription.text) {
           this.fullTranslationText += msg.serverContent.outputTranscription.text;
-          if (this.callbacks.onTranscriptionChunk) {
+          // Skip relaying live subtitle chunks if this turn is proximity-gated
+          if (!this.inputLangGated && !this.turnSuppressed && this.callbacks.onTranscriptionChunk) {
             this.callbacks.onTranscriptionChunk({
               turnId: this.turnId,
               originalText: this.fullOriginalText.trim(),
@@ -462,14 +578,78 @@ ABSOLUTE RULES:
 
       if (msg.serverContent && msg.serverContent.inputTranscription) {
         if (msg.serverContent.inputTranscription.text) {
-          // Silently accumulate the speaker's original transcription text.
+          // Accumulate the speaker's original (as-spoken) transcription text.
           this.fullOriginalText += msg.serverContent.inputTranscription.text;
+
+          // ── HOLD-AND-RELEASE LANGUAGE GATE ───────────────────────────────
+          // This is the authoritative language decision point.
+          //
+          // At this moment we have actual transcribed text from the speaker's
+          // audio. Compare its Unicode script against the user's configured
+          // inputLang:
+          //
+          //  MISMATCH → wrong language spoken (nearby user echo, or user
+          //    deliberately spoke wrong lang). Set inputLangGated, discard all
+          //    held audio — nothing reaches the partner.
+          //
+          //  MATCH (or not enough text yet to judge) → confirm language, flush
+          //    the held audio into the normal burst pipeline so it plays out
+          //    on the partner's phone as if there had been no hold at all.
+          if (!this.inputLangGated && !this.languageConfirmed) {
+            if (scriptMismatch(this.fullOriginalText, this.inputLang)) {
+              // ── GATE: wrong language — discard ──────────────────────────
+              this.inputLangGated = true;
+              if (this._langConfirmTimer) {
+                clearTimeout(this._langConfirmTimer);
+                this._langConfirmTimer = null;
+              }
+              // Discard ALL held and in-flight audio for this turn.
+              this.heldBurstBuffers = [];
+              this.heldBurstBytes = 0;
+              this.inFlightBurstBuffers = [];
+              this.inFlightBurstBytes = 0;
+              console.log(
+                `[ProximityGate] Turn ${this.turnId} (${this.inputLang}→${this.outputLang}) GATED` +
+                ` — spoken: "${this.fullOriginalText.trim().slice(0, 60)}"` +
+                ` is not ${this.inputLang}. Held audio discarded.`
+              );
+            } else {
+              // ── CONFIRM: correct language — release held audio ───────────
+              // Only confirm once we have enough letters to be sure
+              // (scriptMismatch returns false for < 6 letters — that's fine,
+              // we just wait for the next inputTranscription chunk).
+              const letters = (this.fullOriginalText.match(/\p{L}/gu) || []).length;
+              if (letters >= 3) {
+                // Even 3 letters in the right script is enough signal to release.
+                this._confirmLanguage();
+              }
+            }
+          }
         }
       }
 
       if (msg.serverContent && msg.serverContent.turnComplete) {
-        // Flush any trailing audio in the burst queue immediately
+        // If language was never confirmed (inputTranscription never arrived,
+        // e.g. pure silence / very short noise), auto-confirm and release
+        // held audio now before the final flush.
+        if (!this.languageConfirmed && !this.inputLangGated) {
+          this._confirmLanguage();
+        }
+
+        // Final flush of any remaining burst audio.
+        // _emitBurst silently discards if gated/suppressed.
         this._emitBurst(true);
+
+        // ── Language gate / output-script guard: silently drop the turn ───
+        if (this.inputLangGated || this.turnSuppressed) {
+          const reason = this.inputLangGated ? 'input-language gate (wrong language spoken)' : 'output-script mismatch';
+          console.log(
+            `[ProximityGate] Turn ${this.turnId} (${this.inputLang}→${this.outputLang}) ` +
+            `discarded at turnComplete — ${reason}.`
+          );
+          this._resetTurnState();
+          return;
+        }
 
         // NOTE: native-audio Live sessions are known to occasionally send a
         // premature turnComplete mid-sentence (see googleapis/js-genai#707,
