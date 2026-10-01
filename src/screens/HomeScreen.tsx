@@ -11,6 +11,7 @@ import {
   ScrollView,
   ActivityIndicator,
   useWindowDimensions,
+  Image,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { LanguageSelector } from '../components/LanguageSelector';
@@ -20,9 +21,8 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { StatusBadge } from '../components/StatusBadge';
 import { useAuth, useUser } from '@clerk/clerk-expo';
 import { useRef } from 'react';
-import { Image } from 'react-native';
 import { requestRecordingPermissionsAsync } from 'expo-audio';
-import { WS_URL, APP_NAME_PREFIX, APP_NAME_SUFFIX } from '../config';
+import { WS_URL, APP_NAME_PREFIX, APP_NAME_SUFFIX, APP_LOGO } from '../config';
 import { colors, DESKTOP_BREAKPOINT } from '../theme';
 
 interface HomeScreenProps {
@@ -71,12 +71,12 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
         if (saved) setMyLang(saved);
         else if (nativeLanguage) setMyLang(nativeLanguage);
       })
-      .catch(() => {});
+      .catch(() => { });
   }, [nativeLanguage]);
 
   const handleSetMyLang = (lang: string) => {
     setMyLang(lang);
-    storage.setItem(MY_LANG_KEY, lang).catch(() => {});
+    storage.setItem(MY_LANG_KEY, lang).catch(() => { });
   };
   const [showQR, setShowQR] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
@@ -169,9 +169,11 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
           {/* Header */}
           <View style={styles.header}>
             <View style={styles.headerTitleContainer}>
-              <View style={styles.logoIcon}>
-                <Feather name="globe" size={20} color={colors.ink} />
-              </View>
+              <Image
+                source={APP_LOGO}
+                style={styles.logoIcon}
+                resizeMode="cover"
+              />
               <Text style={styles.title}>
                 {APP_NAME_PREFIX}
                 {APP_NAME_SUFFIX ? <Text style={styles.titleGreen}>{APP_NAME_SUFFIX}</Text> : null}
@@ -379,8 +381,8 @@ const styles = StyleSheet.create({
   },
   logoIcon: {
     width: 36, height: 36, borderRadius: 10,
-    backgroundColor: colors.signal,
-    justifyContent: 'center', alignItems: 'center', marginRight: 10,
+    marginRight: 10,
+    overflow: 'hidden',
   },
   title: { color: colors.warm, fontSize: 24, fontWeight: '800', letterSpacing: -0.5 },
   titleGreen: { color: colors.signal },

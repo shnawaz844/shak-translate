@@ -24,6 +24,11 @@ module.exports = ({ config }) => {
   const scheme = (branding.scheme || appName.toLowerCase().replace(/[^a-z0-9]/gi, '')).toLowerCase();
   const bundleId = branding.bundleId || `com.cis.${scheme}`;
 
+  // ── Image branding ────────────────────────────────────────────────────────
+  // Change `logoImage` / `openingScreenImage` in app-config.json to swap assets in one go.
+  const logoImage = branding.logoImage || branding.logo || './assets/icon.png';
+  const splashImage = branding.openingScreenImage || branding.openingScreen || branding.splashImage || './assets/splash-icon.png';
+
   const updatedPlugins = (config.plugins || []).map((plugin) => {
     if (Array.isArray(plugin)) {
       const [name, opts] = plugin;
@@ -66,6 +71,18 @@ module.exports = ({ config }) => {
           },
         ];
       }
+      // Apply splashImage from branding config to expo-splash-screen plugin
+      if (name === 'expo-splash-screen' && opts) {
+        return [
+          name,
+          {
+            ...opts,
+            image: splashImage,
+            resizeMode: 'contain',
+            backgroundColor: '#182527',
+          },
+        ];
+      }
     }
     return plugin;
   });
@@ -73,6 +90,10 @@ module.exports = ({ config }) => {
   return {
     ...config,
     name: appName,
+    // Apply logo from branding to the top-level icon
+    icon: fs.existsSync(path.resolve(__dirname, 'assets/icon.png'))
+      ? './assets/icon.png'
+      : logoImage,
     scheme: scheme,
     ios: {
       ...config.ios,
@@ -81,6 +102,15 @@ module.exports = ({ config }) => {
     android: {
       ...config.android,
       package: bundleId,
+      // Apply dark background & adaptive icon foreground
+      adaptiveIcon: {
+        ...(config.android && config.android.adaptiveIcon),
+        backgroundColor: '#182527',
+        foregroundImage: fs.existsSync(path.resolve(__dirname, 'assets/android-icon-foreground.png'))
+          ? './assets/android-icon-foreground.png'
+          : logoImage,
+        backgroundImage: './assets/android-icon-background.png',
+      },
       intentFilters: [
         {
           action: 'VIEW',

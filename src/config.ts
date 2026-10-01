@@ -14,6 +14,8 @@ export {
   APP_NAME_SUFFIX,
   APP_NAME_LOWER,
   APP_BUNDLE_ID,
+  APP_LOGO,
+  APP_OPENING_SCREEN,
 } from '../app-config';
 const wsUrl = process.env.EXPO_PUBLIC_WS_URL;
 if (!wsUrl) {

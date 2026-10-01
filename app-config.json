@@ -1,5 +1,7 @@
 {
-  "appName": "ShakTranslate",
+  "appName": "ShakTalk",
   "appNamePrefix": "Shak",
-  "appNameSuffix": "Translate"
+  "appNameSuffix": "Talk",
+  "logoImage": "./assets/IMG_8753.JPG.jpeg",
+  "openingScreenImage": "./assets/IMG_8759.JPG.jpeg"
 }

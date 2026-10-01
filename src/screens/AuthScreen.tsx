@@ -9,13 +9,14 @@ import {
   Platform,
   ActivityIndicator,
   ScrollView,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather, FontAwesome } from '@expo/vector-icons';
 import { useSignIn, useSignUp, useOAuth } from '@clerk/clerk-expo';
 import * as WebBrowser from 'expo-web-browser';
 import * as Linking from 'expo-linking';
-import { APP_NAME_LOWER, APP_NAME_PREFIX, APP_NAME_SUFFIX } from '../config';
+import { APP_NAME_LOWER, APP_NAME_PREFIX, APP_NAME_SUFFIX, APP_LOGO } from '../config';
 WebBrowser.maybeCompleteAuthSession();
 
 export function AuthScreen() {
@@ -180,9 +181,11 @@ export function AuthScreen() {
 
           {/* Header */}
           <View style={styles.header}>
-            <View style={styles.logoIcon}>
-              <Feather name="globe" size={32} color="#000" />
-            </View>
+            <Image
+              source={APP_LOGO}
+              style={styles.logoIcon}
+              resizeMode="cover"
+            />
             <Text style={styles.title}>
               {APP_NAME_PREFIX}
               {APP_NAME_SUFFIX ? <Text style={styles.titleGreen}>{APP_NAME_SUFFIX}</Text> : null}
@@ -327,10 +330,9 @@ const styles = StyleSheet.create({
   header: { alignItems: 'center', marginBottom: 40 },
   logoIcon: {
     width: 64, height: 64, borderRadius: 18,
-    backgroundColor: '#39FF14',
-    justifyContent: 'center', alignItems: 'center', marginBottom: 16,
-    shadowColor: '#39FF14', shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.4, shadowRadius: 16, elevation: 8,
+    marginBottom: 16,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3, shadowRadius: 8, elevation: 6,
   },
   title: { color: '#fff', fontSize: 32, fontWeight: '800', letterSpacing: -1 },
   titleGreen: { color: '#39FF14' },

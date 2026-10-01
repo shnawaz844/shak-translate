@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { View } from 'react-native';
+import { View, Image } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { APP_OPENING_SCREEN } from './src/config';
 import { ClerkProvider, useAuth, useUser } from '@clerk/clerk-expo';
 import { tokenCache } from './src/utils/tokenCache';
 import { HomeScreen } from './src/screens/HomeScreen';
@@ -112,17 +113,25 @@ function MainApp() {
 
 function AppNavigator() {
   const { isLoaded, isSignedIn } = useAuth();
+  const [openingFinished, setOpeningFinished] = useState(false);
 
   useEffect(() => {
-    if (isLoaded) {
+    const timer = setTimeout(() => {
+      setOpeningFinished(true);
       void SplashScreen.hideAsync().catch(() => {});
-    }
-  }, [isLoaded]);
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, []);
 
-  if (!isLoaded) {
+  if (!isLoaded || !openingFinished) {
     return (
-      <View style={{ flex: 1, backgroundColor: '#0A0A0A', justifyContent: 'center', alignItems: 'center' }}>
+      <View style={{ flex: 1, backgroundColor: '#182527', justifyContent: 'center', alignItems: 'center' }}>
         <StatusBar style="light" />
+        <Image
+          source={APP_OPENING_SCREEN}
+          style={{ width: '100%', height: '100%' }}
+          resizeMode="cover"
+        />
       </View>
     );
   }
