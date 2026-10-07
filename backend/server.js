@@ -226,6 +226,43 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── GET /join/:sessionId ───────────────────────────────────────────────────
+  if (req.method === 'GET' && /^\/join\/[^/]+$/.test(req.url)) {
+    const sessionId = req.url.split('/')[2];
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Join ${APP_NAME} Call</title>
+  <style>
+    body { background: #0A0D0C; color: #fff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; text-align: center; }
+    .card { background: #141917; border: 1px solid rgba(243,238,230,0.1); border-radius: 20px; padding: 36px 24px; max-width: 400px; width: 100%; box-shadow: 0 12px 30px rgba(0,0,0,0.5); }
+    h1 { color: #2FE0A8; font-size: 24px; margin: 0 0 10px 0; font-weight: 800; }
+    p { color: #7C8985; font-size: 15px; margin: 0 0 24px 0; line-height: 1.5; }
+    .btn { display: block; background: #2FE0A8; color: #0A0D0C; font-weight: 800; font-size: 16px; padding: 16px 24px; border-radius: 14px; text-decoration: none; box-sizing: border-box; margin-bottom: 16px; }
+    .code { font-family: monospace; color: #7C8985; font-size: 12px; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>${APP_NAME} Live Call</h1>
+    <p>Opening call in ${APP_NAME}…</p>
+    <a href="shaktalk://join/${sessionId}" class="btn">Open Call in ${APP_NAME}</a>
+    <div class="code">Session: ${sessionId}</div>
+  </div>
+  <script>
+    window.location.href = "shaktalk://join/${sessionId}";
+    setTimeout(function() {
+      window.location.href = "shaktranslate://join/${sessionId}";
+    }, 500);
+  </script>
+</body>
+</html>`);
+    return;
+  }
+
   res.writeHead(404); res.end('Not found');
 });
 

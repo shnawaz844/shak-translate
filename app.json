@@ -56,7 +56,15 @@
           "autoVerify": true,
           "data": [
             {
+              "scheme": "shaktalk"
+            },
+            {
               "scheme": "shaktranslate"
+            },
+            {
+              "scheme": "https",
+              "host": "shak-translate-p5ad.onrender.com",
+              "pathPrefix": "/join"
             }
           ],
           "category": [

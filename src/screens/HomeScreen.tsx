@@ -49,6 +49,32 @@ interface RecentConversation {
   messageCount: number;
 }
 
+function extractSessionIdFromUrl(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    // 1. UUID pattern check (standard v4 UUID: 8-4-4-4-12 hex digits)
+    const uuidMatch = url.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+    if (uuidMatch) {
+      return uuidMatch[0];
+    }
+
+    // 2. /join/<id> pattern
+    const joinMatch = url.match(/\/join\/([^/?#]+)/i);
+    if (joinMatch && joinMatch[1]) {
+      return decodeURIComponent(joinMatch[1]);
+    }
+
+    // 3. Query parameter: ?sessionId=... or ?session=... or ?sid=...
+    const queryMatch = url.match(/[?&](?:sessionId|session|sid)=([^&#]+)/i);
+    if (queryMatch && queryMatch[1]) {
+      return decodeURIComponent(queryMatch[1]);
+    }
+  } catch (e) {
+    console.warn('[extractSessionIdFromUrl] Error parsing URL:', url, e);
+  }
+  return null;
+}
+
 export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, onOpenRecordings }: HomeScreenProps) {
   const { signOut } = useAuth();
   const { user } = useUser();
@@ -110,8 +136,15 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
       .finally(() => setLoadingConvs(false));
   }, [userId]);
 
+  const [connectingMsg, setConnectingMsg] = useState<string | null>(null);
+  const pendingJoinRef = useRef<string | null>(null);
+
   const { status, sessionId, partnerLang, role: wsRole, createSession, joinSession, endSession } = useWebSocket({
-    onError: (msg) => setErrorMsg(msg),
+    onError: (msg) => {
+      setErrorMsg(msg);
+      setConnectingMsg(null);
+      pendingJoinRef.current = null;
+    },
     onTranslatedAudio: () => { },
     onPartnerDisconnected: () => { },
   });
@@ -119,9 +152,60 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
   React.useEffect(() => {
     const resolvedRole = wsRole || roleRef.current;
     if (status === 'connected' && sessionId && partnerLang && resolvedRole) {
+      setConnectingMsg(null);
       onSessionReady({ sessionId, role: resolvedRole, myLang, partnerLang });
     }
   }, [status, sessionId, partnerLang, wsRole]);
+
+  const handleJoinFromUrl = async (url: string | null) => {
+    if (!url) return;
+    const incomingSid = extractSessionIdFromUrl(url);
+    if (!incomingSid) return;
+
+    if (pendingJoinRef.current === incomingSid || sessionId === incomingSid) {
+      return;
+    }
+
+    pendingJoinRef.current = incomingSid;
+    setConnectingMsg('Connecting to call from invite link…');
+    setErrorMsg(null);
+
+    const ok = await checkMicPermission();
+    if (!ok) {
+      setConnectingMsg(null);
+      pendingJoinRef.current = null;
+      return;
+    }
+
+    roleRef.current = 'guest';
+    try {
+      console.log('[HomeScreen] Joining session from link:', incomingSid);
+      await joinSession(incomingSid, myLang, userId, speakerGender, speakerAge);
+    } catch (err: any) {
+      console.error('[HomeScreen] Error joining from link:', err);
+      setErrorMsg(err?.message || 'Failed to join call from link.');
+      setConnectingMsg(null);
+      pendingJoinRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    // 1. Initial launch from link (cold start)
+    Linking.getInitialURL()
+      .then(url => {
+        if (url) handleJoinFromUrl(url);
+      })
+      .catch(e => console.warn('[HomeScreen] getInitialURL error:', e));
+
+    // 2. Incoming link while app is already open or backgrounded
+    const sub = Linking.addEventListener('url', event => {
+      if (event?.url) handleJoinFromUrl(event.url);
+    });
+
+    return () => {
+      sub.remove();
+    };
+  }, [myLang, userId, speakerGender, speakerAge]);
 
   const checkMicPermission = async (): Promise<boolean> => {
     if (Platform.OS === 'web') return true;
@@ -225,6 +309,14 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
 
           <Text style={styles.greetTitle}>Ready when you are</Text>
           <Text style={styles.subtitle}>Start a call and share the code, or join one.</Text>
+
+          {/* Connecting from link banner */}
+          {connectingMsg && (
+            <View style={styles.connectingBox}>
+              <ActivityIndicator size="small" color={colors.signal} style={{ marginRight: 8 }} />
+              <Text style={styles.connectingText}>{connectingMsg}</Text>
+            </View>
+          )}
 
           {/* Error */}
           {errorMsg && (
@@ -465,6 +557,13 @@ const styles = StyleSheet.create({
     color: colors.muted,
     fontSize: 13, marginBottom: 28,
   },
+  connectingBox: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: 'rgba(47,224,168,0.1)',
+    borderWidth: 1, borderColor: 'rgba(47,224,168,0.3)',
+    borderRadius: 12, padding: 12, marginBottom: 16,
+  },
+  connectingText: { color: colors.signal, fontSize: 13, fontWeight: '600', flex: 1 },
   errorBox: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     backgroundColor: 'rgba(232,92,92,0.1)',

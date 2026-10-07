@@ -127,7 +127,12 @@ module.exports = ({ config }) => {
         {
           action: 'VIEW',
           autoVerify: true,
-          data: [{ scheme: scheme }],
+          data: [
+            { scheme: scheme },
+            { scheme: 'shaktalk' },
+            { scheme: 'shaktranslate' },
+            { scheme: 'https', host: 'shak-translate-p5ad.onrender.com', pathPrefix: '/join' },
+          ],
           category: ['BROWSABLE', 'DEFAULT'],
         },
       ],
