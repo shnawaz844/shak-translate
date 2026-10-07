@@ -12,6 +12,8 @@ import {
   ActivityIndicator,
   useWindowDimensions,
   Image,
+  Share,
+  Linking,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { LanguageSelector } from '../components/LanguageSelector';
@@ -22,7 +24,7 @@ import { StatusBadge } from '../components/StatusBadge';
 import { useAuth, useUser } from '@clerk/clerk-expo';
 import { useRef } from 'react';
 import { requestRecordingPermissionsAsync } from 'expo-audio';
-import { WS_URL, APP_NAME_PREFIX, APP_NAME_SUFFIX, APP_LOGO } from '../config';
+import { WS_URL, APP_NAME_PREFIX, APP_NAME_SUFFIX, APP_LOGO, JOIN_BASE_URL, APP_NAME } from '../config';
 import { colors, DESKTOP_BREAKPOINT } from '../theme';
 
 interface HomeScreenProps {
@@ -143,6 +145,34 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
     roleRef.current = 'host';
     await createSession(myLang, userId, speakerGender, speakerAge);
     setShowQR(true);
+  };
+
+  // ── WhatsApp / native share ───────────────────────────────────────────────
+  const buildShareMessage = (sid: string) => {
+    const joinUrl = `${JOIN_BASE_URL}/${sid}`;
+    return (
+      `Hey! Join my ${APP_NAME} live-translation call 🌐\n\n` +
+      `👉 Tap to join: ${joinUrl}\n\n` +
+      `Or open the app → "Scan to join" → scan the QR code I'll show you.\n\n` +
+      `Session code: ${sid}`
+    );
+  };
+
+  const handleShareWhatsApp = async (sid: string) => {
+    const msg = buildShareMessage(sid);
+    const waUrl = `whatsapp://send?text=${encodeURIComponent(msg)}`;
+    const canOpen = await Linking.canOpenURL(waUrl);
+    if (canOpen) {
+      await Linking.openURL(waUrl);
+    } else {
+      // Fallback: native share sheet (works even if WhatsApp not installed)
+      await Share.share({ message: msg });
+    }
+  };
+
+  const handleShareNative = async (sid: string) => {
+    const msg = buildShareMessage(sid);
+    await Share.share({ message: msg, title: `Join my ${APP_NAME} call` });
   };
 
   const handleScanned = async (scannedId: string) => {
@@ -330,6 +360,29 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
               <Text style={styles.connectedMsg}>Partner connected! Starting call…</Text>
             )}
 
+            {/* Share buttons — only shown once we have a session ID */}
+            {sessionId && (
+              <View style={styles.shareRow}>
+                <TouchableOpacity
+                  style={styles.whatsappBtn}
+                  onPress={() => handleShareWhatsApp(sessionId)}
+                  activeOpacity={0.8}
+                >
+                  {/* WhatsApp logo colour icon */}
+                  <Text style={styles.waBtnIcon}>💬</Text>
+                  <Text style={styles.waBtnText}>Share on WhatsApp</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.nativeShareBtn}
+                  onPress={() => handleShareNative(sessionId)}
+                  activeOpacity={0.8}
+                >
+                  <Feather name="share-2" size={17} color={colors.warm} />
+                </TouchableOpacity>
+              </View>
+            )}
+
             <TouchableOpacity
               style={styles.cancelBtn}
               onPress={() => {
@@ -486,8 +539,45 @@ const styles = StyleSheet.create({
     color: colors.signal, fontSize: 13, fontWeight: '600',
     marginTop: 16, textAlign: 'center',
   },
+  // Share buttons
+  shareRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 20,
+    width: '100%',
+  },
+  whatsappBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#25D366',
+    borderRadius: 14,
+    paddingVertical: 13,
+    paddingHorizontal: 16,
+    shadowColor: '#25D366',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 4,
+  },
+  waBtnIcon: { fontSize: 18 },
+  waBtnText: { color: '#fff', fontSize: 14, fontWeight: '700' },
+  nativeShareBtn: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: colors.surface2,
+    borderWidth: 1,
+    borderColor: colors.hair,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
   cancelBtn: {
-    marginTop: 24,
+    marginTop: 16,
     paddingHorizontal: 32, paddingVertical: 12,
     borderRadius: 12, borderWidth: 1, borderColor: colors.hair,
   },

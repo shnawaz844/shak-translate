@@ -27,23 +27,21 @@ export const WS_URL = wsUrl;
 // Derived from WS_URL so both always point at the same backend.
 export const API_URL = WS_URL.replace(/^ws/, 'http');
 
+// Base URL for shareable session join links (e.g. https://…/join/<sessionId>)
+export const JOIN_BASE_URL = `${API_URL}/join`;
+
 export const LANGUAGES = [
+  { code: 'en-US', name: 'English' },
+  { code: 'hi-IN', name: 'Hindi' },
+  { code: 'ru-RU', name: 'Russian' },
+  { code: 'uk-UA', name: 'Ukrainian' },
   // China
   { code: 'zh-CN', name: 'Mandarin' },
   { code: 'zh-HK', name: 'Cantonese' },
 
   // GCC Countries (Gulf Cooperation Council)
-  { code: 'ar-SA', name: 'Arabic (Saudi)' },
-  { code: 'ar-AE', name: 'Arabic (UAE)' },
-  { code: 'ar-QA', name: 'Arabic (Qatar)' },
-  { code: 'ar-KW', name: 'Arabic (Kuwait)' },
-  { code: 'ar-OM', name: 'Arabic (Oman)' },
-  { code: 'ar-BH', name: 'Arabic (Bahrain)' },
-  { code: 'ar', name: 'Arabic (Standard)' },
-
+  { code: 'ar-SA', name: 'Arabic' },
   // Global & Regional Languages
-  { code: 'en-US', name: 'English' },
-  { code: 'hi-IN', name: 'Hindi' },
   { code: 'ur-PK', name: 'Urdu' },
   { code: 'es-ES', name: 'Spanish' },
   { code: 'fr-FR', name: 'French' },

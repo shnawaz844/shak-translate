@@ -78,7 +78,7 @@ module.exports = ({ config }) => {
           {
             ...opts,
             image: splashImage,
-            resizeMode: 'contain',
+            resizeMode: 'cover',
             backgroundColor: '#182527',
           },
         ];
