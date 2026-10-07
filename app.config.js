@@ -71,14 +71,16 @@ module.exports = ({ config }) => {
           },
         ];
       }
-      // Apply splashImage from branding config to expo-splash-screen plugin
+      // Apply crisp app icon to expo-splash-screen plugin so Android 12 doesn't squish a full poster into a circular icon
       if (name === 'expo-splash-screen' && opts) {
         return [
           name,
           {
             ...opts,
-            image: splashImage,
-            resizeMode: 'cover',
+            image: fs.existsSync(path.resolve(__dirname, 'assets/android-icon-foreground.png'))
+              ? './assets/android-icon-foreground.png'
+              : logoImage,
+            resizeMode: 'contain',
             backgroundColor: '#182527',
           },
         ];
@@ -95,6 +97,11 @@ module.exports = ({ config }) => {
       ? './assets/icon.png'
       : logoImage,
     scheme: scheme,
+    splash: {
+      image: splashImage,
+      resizeMode: 'cover',
+      backgroundColor: '#182527',
+    },
     ios: {
       ...config.ios,
       bundleIdentifier: bundleId,
@@ -102,6 +109,11 @@ module.exports = ({ config }) => {
     android: {
       ...config.android,
       package: bundleId,
+      splash: {
+        image: splashImage,
+        resizeMode: 'cover',
+        backgroundColor: '#182527',
+      },
       // Apply dark background & adaptive icon foreground
       adaptiveIcon: {
         ...(config.android && config.android.adaptiveIcon),

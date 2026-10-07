@@ -16,9 +16,6 @@ import * as WebBrowser from 'expo-web-browser';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 
-// Keep the splash screen visible while Clerk loads initial session from storage.
-SplashScreen.preventAutoHideAsync().catch(() => {});
-
 WebBrowser.maybeCompleteAuthSession();
 
 type AppScreen = 'onboarding' | 'home' | 'session' | 'profile' | 'conversation' | 'recordings';
@@ -111,22 +108,13 @@ function MainApp() {
   );
 }
 
-function AppNavigator() {
+function AppNavigator({ openingFinished }: { openingFinished: boolean }) {
   const { isLoaded, isSignedIn } = useAuth();
-  const [openingFinished, setOpeningFinished] = useState(false);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setOpeningFinished(true);
-      void SplashScreen.hideAsync().catch(() => {});
-    }, 1500);
-    return () => clearTimeout(timer);
-  }, []);
 
   if (!isLoaded || !openingFinished) {
     return (
-      <View style={{ flex: 1, backgroundColor: '#182527', justifyContent: 'center', alignItems: 'center' }}>
-        <StatusBar style="light" />
+      <View style={{ flex: 1, backgroundColor: '#182527', width: '100%', height: '100%' }}>
+        <StatusBar hidden={true} />
         <Image
           source={APP_OPENING_SCREEN}
           style={{ width: '100%', height: '100%' }}
@@ -138,29 +126,56 @@ function AppNavigator() {
 
   return (
     <>
-      <StatusBar style="light" />
+      <StatusBar style="light" hidden={false} />
       {isSignedIn ? <MainApp /> : <AuthScreen />}
     </>
   );
 }
 
 export default function App() {
+  const [openingFinished, setOpeningFinished] = useState(false);
+
   useEffect(() => {
-    // Safety guard: guarantee the native splash screen is dismissed within 1.5s
-    // even if network or Clerk session verification takes time on Android
+    // Immediately hide Android's native splash screen so our full-screen startup image displays
+    void SplashScreen.hideAsync().catch(() => {});
+
+    // Keep the branded full-screen startup poster visible for 2.5 seconds
     const timer = setTimeout(() => {
-      void SplashScreen.hideAsync().catch(() => {});
-    }, 1500);
+      setOpeningFinished(true);
+    }, 2500);
     return () => clearTimeout(timer);
   }, []);
 
   return (
-    <View style={{ flex: 1, backgroundColor: '#0A0A0A' }}>
+    <View style={{ flex: 1, backgroundColor: '#182527' }}>
       <SafeAreaProvider>
         <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache}>
-          <AppNavigator />
+          <AppNavigator openingFinished={openingFinished} />
         </ClerkProvider>
       </SafeAreaProvider>
+      {!openingFinished && (
+        <View
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            width: '100%',
+            height: '100%',
+            backgroundColor: '#182527',
+            zIndex: 99999,
+          }}
+          pointerEvents="none"
+        >
+          <StatusBar hidden={true} />
+          <Image
+            source={APP_OPENING_SCREEN}
+            style={{ width: '100%', height: '100%' }}
+            resizeMode="cover"
+          />
+        </View>
+      )}
     </View>
   );
 }

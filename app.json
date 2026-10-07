@@ -16,7 +16,11 @@
     },
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "cover",
+      "backgroundColor": "#182527"
+    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.cis.shaktranslate",
@@ -26,6 +30,11 @@
     },
     "android": {
       "versionCode": 3,
+      "splash": {
+        "image": "./assets/splash.png",
+        "resizeMode": "cover",
+        "backgroundColor": "#182527"
+      },
       "adaptiveIcon": {
         "backgroundColor": "#182527",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -104,9 +113,9 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/splash-icon.png",
-          "resizeMode": "cover",
-          "backgroundColor": "#0A0A0A"
+          "image": "./assets/android-icon-foreground.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#182527"
         }
       ]
     ],

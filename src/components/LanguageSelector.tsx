@@ -1,20 +1,21 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   View,
   Text,
   TouchableOpacity,
   StyleSheet,
   Platform,
-  Modal,
   FlatList,
-  SafeAreaView,
   TextInput,
+  Modal,
+  TouchableWithoutFeedback,
+  Dimensions,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { LANGUAGES } from '../config';
 
 interface LanguageSelectorProps {
-  label: string;
+  label?: string;
   selected: string;
   onSelect: (name: string) => void;
 }
@@ -22,6 +23,8 @@ interface LanguageSelectorProps {
 export function LanguageSelector({ label, selected, onSelect }: LanguageSelectorProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
+  const triggerRef = useRef<View>(null);
+  const [coords, setCoords] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
 
   const filtered = LANGUAGES.filter((l) =>
     l.name.toLowerCase().includes(search.toLowerCase())
@@ -33,92 +36,138 @@ export function LanguageSelector({ label, selected, onSelect }: LanguageSelector
     setSearch('');
   };
 
+  const handleToggle = () => {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    if (triggerRef.current) {
+      triggerRef.current.measureInWindow((x, y, width, height) => {
+        if (width > 0 && height > 0) {
+          setCoords({ x, y, width, height });
+        }
+        setOpen(true);
+        setSearch('');
+      });
+    } else {
+      setOpen(true);
+      setSearch('');
+    }
+  };
+
+  const windowHeight = Dimensions.get('window').height;
+  const maxListHeight = coords
+    ? Math.max(140, Math.min(220, windowHeight - coords.y - coords.height - 100))
+    : 220;
+
   return (
     <View style={styles.wrapper}>
       {label ? <Text style={styles.label}>{label}</Text> : null}
 
-      {/* Trigger */}
-      <TouchableOpacity
-        style={styles.trigger}
-        onPress={() => setOpen(true)}
-        activeOpacity={0.8}
-      >
-        <Text style={styles.triggerText}>{selected}</Text>
-        <Feather name="chevron-down" size={18} color="rgba(255,255,255,0.4)" />
-      </TouchableOpacity>
+      {/* Trigger button anchored in the document layout */}
+      <View ref={triggerRef} collapsable={false}>
+        <TouchableOpacity
+          style={[styles.trigger, open && styles.triggerOpen]}
+          onPress={handleToggle}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.triggerText}>{selected}</Text>
+          <Feather
+            name={open ? 'chevron-up' : 'chevron-down'}
+            size={18}
+            color={open ? '#39FF14' : 'rgba(255,255,255,0.4)'}
+          />
+        </TouchableOpacity>
+      </View>
 
-      {/* Dropdown Modal */}
+      {/* Floating overlay dropdown so the rest of the layout never shifts */}
       <Modal
         visible={open}
-        transparent
-        animationType="fade"
-        onRequestClose={() => { setOpen(false); setSearch(''); }}
+        transparent={true}
+        animationType="none"
+        onRequestClose={() => setOpen(false)}
       >
-        <TouchableOpacity
-          style={styles.backdrop}
-          activeOpacity={1}
-          onPress={() => { setOpen(false); setSearch(''); }}
-        />
-        <SafeAreaView style={styles.sheet} pointerEvents="box-none">
-          <View style={styles.sheetInner}>
-            {/* Header */}
-            <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>Select Language</Text>
-              <TouchableOpacity
-                onPress={() => { setOpen(false); setSearch(''); }}
-                style={styles.closeBtn}
-              >
-                <Feather name="x" size={20} color="rgba(255,255,255,0.5)" />
-              </TouchableOpacity>
-            </View>
+        <TouchableWithoutFeedback onPress={() => setOpen(false)}>
+          <View style={styles.modalBackdrop} />
+        </TouchableWithoutFeedback>
 
-            {/* Search */}
-            <View style={styles.searchRow}>
-              <Feather name="search" size={15} color="rgba(255,255,255,0.3)" style={{ marginRight: 8 }} />
-              <TextInput
-                style={styles.searchInput}
-                placeholder="Search language…"
-                placeholderTextColor="rgba(255,255,255,0.2)"
-                value={search}
-                onChangeText={setSearch}
-                autoCorrect={false}
+        {coords && (
+          <View
+            style={[
+              styles.floatingContainer,
+              {
+                position: 'absolute',
+                top: coords.y,
+                left: coords.x,
+                width: coords.width,
+              },
+            ]}
+          >
+            {/* Active Trigger Header in overlay */}
+            <TouchableOpacity
+              style={[styles.trigger, styles.triggerOpen]}
+              onPress={() => setOpen(false)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.triggerText}>{selected}</Text>
+              <Feather
+                name="chevron-up"
+                size={18}
+                color="#39FF14"
               />
-              {search.length > 0 && (
-                <TouchableOpacity onPress={() => setSearch('')}>
-                  <Feather name="x-circle" size={15} color="rgba(255,255,255,0.3)" />
-                </TouchableOpacity>
-              )}
-            </View>
+            </TouchableOpacity>
 
-            {/* List */}
-            <FlatList
-              data={filtered}
-              keyExtractor={(item) => item.code}
-              showsVerticalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-              renderItem={({ item }) => {
-                const isSelected = item.name === selected;
-                return (
-                  <TouchableOpacity
-                    style={[styles.option, isSelected && styles.optionSelected]}
-                    onPress={() => handleSelect(item.name)}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={[styles.optionText, isSelected && styles.optionTextSelected]}>
-                      {item.name}
-                    </Text>
-                    {isSelected && (
-                      <Feather name="check" size={16} color="#39FF14" />
-                    )}
+            {/* Dropdown panel floating directly over the layout below */}
+            <View style={styles.panel}>
+              {/* Search bar */}
+              <View style={styles.searchRow}>
+                <Feather name="search" size={14} color="rgba(255,255,255,0.3)" style={{ marginRight: 8 }} />
+                <TextInput
+                  style={styles.searchInput}
+                  placeholder="Search language…"
+                  placeholderTextColor="rgba(255,255,255,0.25)"
+                  value={search}
+                  onChangeText={setSearch}
+                  autoCorrect={false}
+                />
+                {search.length > 0 && (
+                  <TouchableOpacity onPress={() => setSearch('')}>
+                    <Feather name="x-circle" size={14} color="rgba(255,255,255,0.3)" />
                   </TouchableOpacity>
-                );
-              }}
-              ListEmptyComponent={
-                <Text style={styles.emptyText}>No languages found</Text>
-              }
-            />
+                )}
+              </View>
+
+              {/* Language list */}
+              <FlatList
+                data={filtered}
+                keyExtractor={(item) => item.code}
+                showsVerticalScrollIndicator={true}
+                keyboardShouldPersistTaps="handled"
+                style={[styles.list, { maxHeight: maxListHeight }]}
+                renderItem={({ item }) => {
+                  const isSelected = item.name === selected;
+                  return (
+                    <TouchableOpacity
+                      style={[styles.option, isSelected && styles.optionSelected]}
+                      onPress={() => handleSelect(item.name)}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[styles.optionText, isSelected && styles.optionTextSelected]}>
+                        {item.name}
+                      </Text>
+                      {isSelected && (
+                        <Feather name="check" size={15} color="#39FF14" />
+                      )}
+                    </TouchableOpacity>
+                  );
+                }}
+                ListEmptyComponent={
+                  <Text style={styles.emptyText}>No languages found</Text>
+                }
+              />
+            </View>
           </View>
-        </SafeAreaView>
+        )}
       </Modal>
     </View>
   );
@@ -138,7 +187,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
 
-  // Dropdown trigger button
+  // Trigger
   trigger: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -150,48 +199,40 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 14,
   },
+  triggerOpen: {
+    borderColor: '#39FF14',
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
+    borderBottomWidth: 0,
+  },
   triggerText: {
     color: '#fff',
     fontSize: 15,
     fontWeight: '600',
   },
 
-  // Modal backdrop
-  backdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.6)',
+  // Modal backdrop & floating container
+  modalBackdrop: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: 'rgba(0,0,0,0.3)',
+  },
+  floatingContainer: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.6,
+    shadowRadius: 20,
+    elevation: 25,
   },
 
-  // Bottom sheet
-  sheet: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-  },
-  sheetInner: {
-    backgroundColor: '#141414',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
+  // Floating dropdown panel
+  panel: {
+    backgroundColor: '#161c1a',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    paddingTop: 20,
-    maxHeight: 480,
-  },
-  sheetHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    marginBottom: 14,
-  },
-  sheetTitle: {
-    color: '#fff',
-    fontSize: 17,
-    fontWeight: '700',
-  },
-  closeBtn: {
-    padding: 4,
+    borderTopWidth: 0,
+    borderColor: '#39FF14',
+    borderBottomLeftRadius: 14,
+    borderBottomRightRadius: 14,
+    overflow: 'hidden',
   },
 
   // Search
@@ -199,37 +240,37 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: 'rgba(255,255,255,0.05)',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    marginHorizontal: 16,
-    marginBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.06)',
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
   searchInput: {
     flex: 1,
     color: '#fff',
-    fontSize: 14,
+    fontSize: 13,
     padding: 0,
   },
 
-  // List items
+  // List
+  list: {
+    maxHeight: 220,
+  },
   option: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 15,
+    paddingHorizontal: 16,
+    paddingVertical: 13,
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255,255,255,0.04)',
   },
   optionSelected: {
-    backgroundColor: 'rgba(57,255,20,0.06)',
+    backgroundColor: 'rgba(57,255,20,0.07)',
   },
   optionText: {
     color: 'rgba(255,255,255,0.7)',
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '500',
   },
   optionTextSelected: {
@@ -238,8 +279,8 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     color: 'rgba(255,255,255,0.3)',
-    fontSize: 14,
+    fontSize: 13,
     textAlign: 'center',
-    paddingVertical: 24,
+    paddingVertical: 20,
   },
 });
