@@ -121,7 +121,8 @@ export function SessionScreen({
   const schedulePlaybackEnd = useCallback(() => {
     if (playbackEndDebounceRef.current) clearTimeout(playbackEndDebounceRef.current);
     // Use a longer debounce when speaker is on so room reverb tail is also covered.
-    const debounceMs = isSpeakerOnRef.current ? 600 : 300;
+    // 1000ms on loudspeaker gives more margin for Android devices without hardware AEC.
+    const debounceMs = isSpeakerOnRef.current ? 1000 : 300;
     playbackEndDebounceRef.current = setTimeout(() => {
       isPlayingAudioRef.current = false;
       playbackEndTimeRef.current = Date.now();
@@ -394,19 +395,21 @@ export function SessionScreen({
         const tempPath = `${FileSystem.cacheDirectory}turn_${turnId}_burst_${payload.index ?? 0}.wav`;
         nativeTempFilesRef.current.push(tempPath);
 
+        // Gate the mic IMMEDIATELY before the async file write — any delay before
+        // setting isPlayingAudioRef=true lets mic chunks reach Gemini during the
+        // disk-write latency (~20-80ms), causing the speaker-echo / re-translation loop.
+        if (playbackEndDebounceRef.current) {
+          clearTimeout(playbackEndDebounceRef.current);
+          playbackEndDebounceRef.current = null;
+        }
+        isPlayingAudioRef.current = true;
+        setIsPlayingAudio(true);
+
         void (async () => {
           try {
             await FileSystem.writeAsStringAsync(tempPath, payload.audioBase64, {
               encoding: FileSystem.EncodingType.Base64,
             });
-
-            // Cancel any pending end-debounce — a new chunk arrived, still playing.
-            if (playbackEndDebounceRef.current) {
-              clearTimeout(playbackEndDebounceRef.current);
-              playbackEndDebounceRef.current = null;
-            }
-            isPlayingAudioRef.current = true;
-            setIsPlayingAudio(true);
 
             const pl = nativePlaylistRef.current;
             if (pl) {
@@ -490,7 +493,18 @@ export function SessionScreen({
       Alert.alert('Error', msg);
     }, []),
 
-    onPartnerSpeaking: useCallback(() => { setPartnerSpeaking(true); }, []),
+    onPartnerSpeaking: useCallback(() => {
+      setPartnerSpeaking(true);
+      // Pre-gate mic immediately: translation audio is about to arrive.
+      // Without this, mic chunks can reach Gemini in the gap between
+      // partner_speaking and the first translated_audio_chunk arriving.
+      if (playbackEndDebounceRef.current) {
+        clearTimeout(playbackEndDebounceRef.current);
+        playbackEndDebounceRef.current = null;
+      }
+      isPlayingAudioRef.current = true;
+      setIsPlayingAudio(true);
+    }, []),
     onLockReleased: useCallback(() => { setPartnerSpeaking(false); }, []),
     onTurnRejected: useCallback(() => {}, []),
   });
@@ -550,10 +564,10 @@ export function SessionScreen({
     }
     // Post-playback reverberation tail guard:
     // On loudspeaker the audio bounces off walls for noticeably longer than
-    // on earpiece (which sits flush against the ear). 800ms covers room echo
-    // without causing the noticeable mic-clamp that the old full-block did.
-    // Earpiece keeps a short 200ms tail since hardware AEC handles the bulk.
-    const tailMs = isSpeakerOnRef.current ? 800 : 200;
+    // on earpiece (which sits flush against the ear). 1200ms covers room echo
+    // on Android (no hardware AEC) without causing a noticeable mic-clamp.
+    // Earpiece keeps a short 300ms tail since hardware AEC handles the bulk.
+    const tailMs = isSpeakerOnRef.current ? 1200 : 300;
     if (Date.now() < playbackEndTimeRef.current + tailMs) {
       return;
     }
