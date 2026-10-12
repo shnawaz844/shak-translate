@@ -17,10 +17,7 @@ export {
   APP_LOGO,
   APP_OPENING_SCREEN,
 } from '../app-config';
-const wsUrl = process.env.EXPO_PUBLIC_WS_URL;
-if (!wsUrl) {
-  throw new Error('Missing EXPO_PUBLIC_WS_URL in .env');
-}
+const wsUrl = process.env.EXPO_PUBLIC_WS_URL || 'ws://16.4.55.207:8080';
 export const WS_URL = wsUrl;
 
 // HTTP equivalent of WS_URL, for plain REST calls (e.g. /clerk/update-profile).

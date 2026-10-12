@@ -2,14 +2,14 @@
   "expo": {
     "name": "ShakTranslate",
     "slug": "shak-translate",
-    "owner": "devlopershah",
+    "owner": "shahahmad",
     "scheme": "shaktranslate",
     "version": "1.0.0",
     "runtimeVersion": {
       "policy": "appVersion"
     },
     "updates": {
-      "url": "https://u.expo.dev/d1f2be0b-7ecc-4ef6-80eb-47cde59b50cf",
+      "url": "https://u.expo.dev/fc77c2dc-9335-4c05-a058-d9f7af8f827e",
       "enabled": true,
       "checkAutomatically": "ON_LOAD",
       "fallbackToCacheTimeout": 0
@@ -24,12 +24,17 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.cis.shaktranslate",
+      "buildNumber": "31",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        }
       }
     },
     "android": {
-      "versionCode": 3,
+      "usesCleartextTraffic": true,
+      "versionCode": 4,
       "splash": {
         "image": "./assets/splash.png",
         "resizeMode": "cover",
@@ -125,11 +130,19 @@
           "resizeMode": "contain",
           "backgroundColor": "#182527"
         }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
       ]
     ],
     "extra": {
       "eas": {
-        "projectId": "d1f2be0b-7ecc-4ef6-80eb-47cde59b50cf"
+        "projectId": "fc77c2dc-9335-4c05-a058-d9f7af8f827e"
       }
     }
   }
