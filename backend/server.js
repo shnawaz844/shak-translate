@@ -8,6 +8,7 @@ const { uploadAudio } = require('./storageService');
 const { APP_NAME } = require('./app-config');
 
 const PORT = process.env.PORT || 8080;
+const LATEST_ANDROID_APK_URL = process.env.LATEST_ANDROID_APK_URL || 'https://expo.dev/accounts/shahahmad/projects/shak-translate/builds/bb9de5af-858f-4444-948e-8a1a54ca988f';
 
 // The plain WebRTC call (src/hooks/useWebRTCCall.ts) validated that call
 // quality/latency is solid without Gemini in the loop. AI translation is
@@ -226,6 +227,13 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── GET /apk or /download/apk ───────────────────────────────────────────────
+  if (req.method === 'GET' && (req.url === '/apk' || req.url === '/download/apk')) {
+    res.writeHead(302, { Location: LATEST_ANDROID_APK_URL });
+    res.end();
+    return;
+  }
+
   // ── GET /join/:sessionId ───────────────────────────────────────────────────
   if (req.method === 'GET' && /^\/join\/[^/]+$/.test(req.url)) {
     const sessionId = req.url.split('/')[2];
@@ -237,26 +245,195 @@ const httpServer = http.createServer(async (req, res) => {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Join ${APP_NAME} Call</title>
   <style>
-    body { background: #0A0D0C; color: #fff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; text-align: center; }
-    .card { background: #141917; border: 1px solid rgba(243,238,230,0.1); border-radius: 20px; padding: 36px 24px; max-width: 400px; width: 100%; box-shadow: 0 12px 30px rgba(0,0,0,0.5); }
-    h1 { color: #2FE0A8; font-size: 24px; margin: 0 0 10px 0; font-weight: 800; }
-    p { color: #7C8985; font-size: 15px; margin: 0 0 24px 0; line-height: 1.5; }
-    .btn { display: block; background: #2FE0A8; color: #0A0D0C; font-weight: 800; font-size: 16px; padding: 16px 24px; border-radius: 14px; text-decoration: none; box-sizing: border-box; margin-bottom: 16px; }
-    .code { font-family: monospace; color: #7C8985; font-size: 12px; word-break: break-all; }
+    * { box-sizing: border-box; }
+    body {
+      background: #0A0D0C;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 24px 16px;
+      text-align: center;
+    }
+    .card {
+      background: #141917;
+      border: 1px solid rgba(47, 224, 168, 0.25);
+      border-radius: 24px;
+      padding: 36px 24px;
+      max-width: 420px;
+      width: 100%;
+      box-shadow: 0 16px 40px rgba(0,0,0,0.6);
+    }
+    .badge {
+      display: inline-block;
+      background: rgba(47, 224, 168, 0.12);
+      color: #2FE0A8;
+      border: 1px solid rgba(47, 224, 168, 0.3);
+      font-size: 12px;
+      font-weight: 700;
+      padding: 6px 14px;
+      border-radius: 999px;
+      margin-bottom: 16px;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+    h1 {
+      color: #fff;
+      font-size: 24px;
+      margin: 0 0 8px 0;
+      font-weight: 800;
+    }
+    h1 span { color: #2FE0A8; }
+    #statusText {
+      color: #9BA8A4;
+      font-size: 15px;
+      margin: 0 0 24px 0;
+      line-height: 1.5;
+    }
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 16px;
+      padding: 16px 20px;
+      border-radius: 14px;
+      text-decoration: none;
+      width: 100%;
+      margin-bottom: 12px;
+      transition: all 0.2s ease;
+      cursor: pointer;
+    }
+    .btn-primary {
+      background: #2FE0A8;
+      color: #0A0D0C;
+      border: none;
+    }
+    .btn-primary:active { transform: scale(0.98); }
+    .btn-secondary {
+      background: #1C2421;
+      color: #2FE0A8;
+      border: 1px solid rgba(47, 224, 168, 0.4);
+    }
+    .divider {
+      height: 1px;
+      background: rgba(255,255,255,0.08);
+      margin: 20px 0;
+    }
+    .session-box {
+      background: #0D1210;
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 12px;
+      padding: 12px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .session-code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color: #7C8985;
+      font-size: 12px;
+      word-break: break-all;
+      text-align: left;
+    }
+    .copy-btn {
+      background: #24302C;
+      color: #E2ECE8;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .instructions {
+      color: #63726E;
+      font-size: 13px;
+      margin-top: 16px;
+      line-height: 1.4;
+    }
   </style>
 </head>
 <body>
   <div class="card">
-    <h1>${APP_NAME} Live Call</h1>
-    <p>Opening call in ${APP_NAME}…</p>
-    <a href="shaktalk://join/${sessionId}" class="btn">Open Call in ${APP_NAME}</a>
-    <div class="code">Session: ${sessionId}</div>
+    <div class="badge">🌐 Live Call Invite</div>
+    <h1>Join <span>${APP_NAME}</span></h1>
+    <p id="statusText">Opening your live translation call…</p>
+    
+    <a href="shaktalk://join/${sessionId}" id="openAppBtn" class="btn btn-primary">
+      <span>📞</span> Open Call in ${APP_NAME}
+    </a>
+
+    <div id="downloadSection">
+      <a href="${LATEST_ANDROID_APK_URL}" id="downloadBtn" class="btn btn-secondary">
+        <span>🤖</span> Download Android App (APK)
+      </a>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="session-box">
+      <div class="session-code" id="codeText">${sessionId}</div>
+      <button class="copy-btn" id="copyBtn" onclick="copySessionCode()">Copy Code</button>
+    </div>
+    
+    <div class="instructions">
+      If you just installed the app, open it & tap <strong>"Enter code"</strong> or scan the host's QR code.
+    </div>
   </div>
+
   <script>
-    window.location.href = "shaktalk://join/${sessionId}";
+    var sessionId = "${sessionId}";
+    var apkUrl = "${LATEST_ANDROID_APK_URL}";
+    var isAndroid = /Android/i.test(navigator.userAgent);
+
+    function copySessionCode() {
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(sessionId).then(function() {
+          var btn = document.getElementById("copyBtn");
+          btn.innerText = "Copied! ✓";
+          btn.style.color = "#2FE0A8";
+          setTimeout(function() { btn.innerText = "Copy Code"; btn.style.color = "#E2ECE8"; }, 2000);
+        });
+      }
+    }
+
+    // Attempt to open native app
+    window.location.href = "shaktalk://join/" + sessionId;
     setTimeout(function() {
-      window.location.href = "shaktranslate://join/${sessionId}";
-    }, 500);
+      window.location.href = "shaktranslate://join/" + sessionId;
+    }, 400);
+
+    // Check if app opened
+    var appOpened = false;
+    document.addEventListener("visibilitychange", function() {
+      if (document.hidden) appOpened = true;
+    });
+    window.addEventListener("blur", function() {
+      appOpened = true;
+    });
+
+    // If app didn't open after 2 seconds
+    setTimeout(function() {
+      if (!appOpened && !document.hidden) {
+        var statusEl = document.getElementById("statusText");
+        if (statusEl) {
+          statusEl.innerHTML = "Don't have <strong>${APP_NAME}</strong> installed yet?<br>Download the Android APK below to join:";
+        }
+        var dlBtn = document.getElementById("downloadBtn");
+        if (dlBtn && isAndroid) {
+          dlBtn.className = "btn btn-primary";
+          dlBtn.style.boxShadow = "0 4px 20px rgba(47, 224, 168, 0.4)";
+        }
+      }
+    }, 2000);
   </script>
 </body>
 </html>`);
