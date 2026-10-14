@@ -9,7 +9,8 @@
       "distribution": "internal",
       "channel": "development",
       "env": {
-        "EXPO_PUBLIC_WS_URL": "ws://16.4.55.207:8080",
+        "EXPO_PUBLIC_WS_URL": "wss://www.shaktalk.com",
+        "EXPO_PUBLIC_APP_DOMAIN": "www.shaktalk.com",
         "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_test_cHJvcGVyLWphZ3Vhci04NS5jbGVyay5hY2NvdW50cy5kZXYk",
         "NPM_CONFIG_LEGACY_PEER_DEPS": "true"
       }
@@ -21,7 +22,8 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_WS_URL": "ws://16.4.55.207:8080",
+        "EXPO_PUBLIC_WS_URL": "wss://www.shaktalk.com",
+        "EXPO_PUBLIC_APP_DOMAIN": "www.shaktalk.com",
         "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_test_cHJvcGVyLWphZ3Vhci04NS5jbGVyay5hY2NvdW50cy5kZXYk",
         "NPM_CONFIG_LEGACY_PEER_DEPS": "true"
       }
@@ -30,7 +32,8 @@
       "autoIncrement": true,
       "channel": "production",
       "env": {
-        "EXPO_PUBLIC_WS_URL": "ws://16.4.55.207:8080",
+        "EXPO_PUBLIC_WS_URL": "wss://www.shaktalk.com",
+        "EXPO_PUBLIC_APP_DOMAIN": "www.shaktalk.com",
         "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_test_cHJvcGVyLWphZ3Vhci04NS5jbGVyay5hY2NvdW50cy5kZXYk",
         "NPM_CONFIG_LEGACY_PEER_DEPS": "true"
       }

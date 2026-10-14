@@ -68,7 +68,12 @@
             },
             {
               "scheme": "https",
-              "host": "shak-translate-p5ad.onrender.com",
+              "host": "www.shaktalk.com",
+              "pathPrefix": "/join"
+            },
+            {
+              "scheme": "https",
+              "host": "shaktalk.com",
               "pathPrefix": "/join"
             }
           ],

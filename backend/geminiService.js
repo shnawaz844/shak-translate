@@ -84,35 +84,14 @@ const LANGUAGE_NAME_TO_BCP47 = {
   Spanish: 'es-ES',
   French: 'fr-FR',
   German: 'de-DE',
+  Russian: 'ru-RU',
+  Ukrainian: 'uk-UA',
 };
 
 function bcp47For(languageName) {
   return LANGUAGE_NAME_TO_BCP47[languageName];
 }
 
-// Unicode script ranges for the app's supported languages. This is a hard,
-// code-level backstop on top of the system prompt's "always output in the
-// listener's language" rule — that rule is an instruction to the model, not
-// a guarantee, and real testing showed it can still fail (e.g. an echoed
-// English turn getting voiced on a Hindi-output session). A script check on
-// the translation text that already streams in alongside each audio chunk
-// (no separate audio analysis needed) lets us catch a *confident* mismatch
-// and drop that audio before it reaches the listener, rather than trusting
-// the model never to slip.
-//
-// The same SCRIPT_RANGES map is also used by the PROXIMITY LANGUAGE GATE
-// (see _onMessage → inputTranscription handling below). When two users stand
-// physically nearby, each mic inevitably picks up the partner's voice in the
-// wrong language. Gemini auto-detects what was actually spoken in
-// inputTranscription; if that script is confidently NOT the user's selected
-// inputLang, the whole turn is suppressed before any audio/text is relayed —
-// preventing an infinite echo loop between the two phones.
-//
-// Limitation, by design: English/Spanish/French/German all share the Latin
-// script, so this can't tell them apart from each other — only a script
-// mismatch against Hindi (Devanagari), Arabic, or Mandarin (CJK) is
-// detectable this way. That's still exactly the failure mode that shows up
-// in nearby-user scenarios, so it's worth having even without full coverage.
 const SCRIPT_RANGES = {
   Hindi: /[ऀ-ॿ]/u,
   Arabic: /[؀-ۿ]/u,
@@ -130,6 +109,8 @@ const SCRIPT_RANGES = {
   Spanish: /[A-Za-z]/u,
   French: /[A-Za-z]/u,
   German: /[A-Za-z]/u,
+  Russian: /[\u0400-\u04FF]/u,
+  Ukrainian: /[\u0400-\u04FF]/u,
 };
 
 /**
@@ -581,6 +562,15 @@ ABSOLUTE RULES:
           // Accumulate the speaker's original (as-spoken) transcription text.
           this.fullOriginalText += msg.serverContent.inputTranscription.text;
 
+          // Immediately update live subtitle for self so the speaker sees their speech on screen without waiting for translation output!
+          if (!this.inputLangGated && !this.turnSuppressed && this.callbacks.onTranscriptionChunk) {
+            this.callbacks.onTranscriptionChunk({
+              turnId: this.turnId || `turn-${Date.now()}`,
+              originalText: this.fullOriginalText.trim(),
+              translatedText: this.fullTranslationText.trim(),
+            });
+          }
+
           // ── HOLD-AND-RELEASE LANGUAGE GATE ───────────────────────────────
           // This is the authoritative language decision point.
           //
@@ -725,7 +715,25 @@ ABSOLUTE RULES:
     }
 
     console.log(`[LiveTranslationSession] Opening session (${this.inputLang}→${this.outputLang})...`);
-    this.connectPromise = ai.live.connect(this._buildConfig())
+    
+    // Connect with a 10s timeout to prevent hanging forever on high-latency international connections
+    const connectWithTimeout = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`ai.live.connect timed out after 10000ms for ${this.inputLang}→${this.outputLang}`));
+      }, 10000);
+
+      ai.live.connect(this._buildConfig())
+        .then((session) => {
+          clearTimeout(timer);
+          resolve(session);
+        })
+        .catch((err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+    });
+
+    this.connectPromise = connectWithTimeout
       .then((session) => {
         this.session = session;
         this.connectPromise = null;
@@ -816,7 +824,7 @@ async function warmupSession(sessionId, role, inputLang, outputLang, voiceProfil
     console.log(`[geminiService] Warmed up persistent session for ${role} in session ${sessionId}`);
   } catch (err) {
     console.error(`[geminiService] Warmup failed for ${role} in session ${sessionId}:`, err.message);
-    activeSessions.delete(key); // Remove so it retries lazily on first feedAudio
+    // DO NOT delete from activeSessions! Keep liveSession so feedAudio can retry ensureConnected() lazily when speech begins.
   }
 }
 

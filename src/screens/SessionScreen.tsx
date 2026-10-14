@@ -113,6 +113,9 @@ export function SessionScreen({
   const nativePlaylistRef = useRef<AudioPlaylist | null>(null);
   const nativeTempFilesRef = useRef<string[]>([]);
   const currentNativeTurnIdRef = useRef<string | null>(null);
+  // Safety: if partner_speaking pre-gates the mic but no audio ever arrives,
+  // this timeout resets isPlayingAudioRef after 5s so the mic isn't stuck silent.
+  const partnerSpeakingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Debounce timer that delays clearing isPlayingAudioRef so inter-chunk gaps
   // between streaming audio bursts don't briefly reopen the mic window and
   // let loudspeaker bleed through to Gemini (causing the echo loop).
@@ -360,6 +363,11 @@ export function SessionScreen({
     }, []),
 
     onTranslatedAudioChunk: useCallback((payload: any) => {
+      // Audio arrived — cancel the partner_speaking safety timeout
+      if (partnerSpeakingTimeoutRef.current) {
+        clearTimeout(partnerSpeakingTimeoutRef.current);
+        partnerSpeakingTimeoutRef.current = null;
+      }
       if (payload.text?.trim()) {
         setActiveSubtitle(prev => ({
           speaker: 'partner',
@@ -504,6 +512,21 @@ export function SessionScreen({
       }
       isPlayingAudioRef.current = true;
       setIsPlayingAudio(true);
+
+      // Safety net: if no audio chunk arrives within 5s, release the mic gate.
+      // This prevents a permanent mic-block when partner_speaking fires but no
+      // audio follows (e.g. network loss, server-side translation failure).
+      if (partnerSpeakingTimeoutRef.current) clearTimeout(partnerSpeakingTimeoutRef.current);
+      partnerSpeakingTimeoutRef.current = setTimeout(() => {
+        if (isPlayingAudioRef.current) {
+          console.warn('[SessionScreen] partner_speaking gate auto-released after 5s (no audio arrived)');
+          isPlayingAudioRef.current = false;
+          playbackEndTimeRef.current = Date.now();
+          setIsPlayingAudio(false);
+          setPartnerSpeaking(false);
+        }
+        partnerSpeakingTimeoutRef.current = null;
+      }, 5000);
     }, []),
     onLockReleased: useCallback(() => { setPartnerSpeaking(false); }, []),
     onTurnRejected: useCallback(() => {}, []),
@@ -690,6 +713,10 @@ export function SessionScreen({
   // Cleanup audio on unmount
   useEffect(() => {
     return () => {
+      if (partnerSpeakingTimeoutRef.current) {
+        clearTimeout(partnerSpeakingTimeoutRef.current);
+        partnerSpeakingTimeoutRef.current = null;
+      }
       if (currentSoundRef.current) {
         try { currentSoundRef.current.remove(); } catch (_) {}
       }

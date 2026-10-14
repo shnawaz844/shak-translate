@@ -14,8 +14,10 @@ import {
   Image,
   Share,
   Linking,
+  TextInput,
+  Clipboard,
 } from 'react-native';
-import { Feather } from '@expo/vector-icons';
+import { Feather, FontAwesome } from '@expo/vector-icons';
 import { LanguageSelector } from '../components/LanguageSelector';
 import { QRCodeDisplay } from '../components/QRCodeDisplay';
 import { QRScanner } from '../components/QRScanner';
@@ -108,6 +110,10 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
   };
   const [showQR, setShowQR] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
+  const [showManualJoin, setShowManualJoin] = useState(false);
+  const [manualCode, setManualCode] = useState('');
+  const [manualCodeError, setManualCodeError] = useState<string | null>(null);
+  const [linkCopied, setLinkCopied] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [recentConversations, setRecentConversations] = useState<RecentConversation[]>([]);
   const [loadingConvs, setLoadingConvs] = useState(false);
@@ -259,6 +265,42 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
     await Share.share({ message: msg, title: `Join my ${APP_NAME} call` });
   };
 
+  const handleCopyLink = (sid: string) => {
+    const joinUrl = `${JOIN_BASE_URL}/${sid}`;
+    if (Platform.OS === 'web') {
+      navigator.clipboard?.writeText(joinUrl).catch(() => {});
+    } else {
+      Clipboard.setString(joinUrl);
+    }
+    setLinkCopied(true);
+    setTimeout(() => setLinkCopied(false), 2000);
+  };
+
+  const handleManualJoin = async () => {
+    const code = manualCode.trim();
+    if (!code) {
+      setManualCodeError('Please enter a session code or link.');
+      return;
+    }
+    // Extract session ID from code or URL
+    const sid = extractSessionIdFromUrl(code) || code;
+    setManualCodeError(null);
+    setShowManualJoin(false);
+    setManualCode('');
+
+    const ok = await checkMicPermission();
+    if (!ok) return;
+    roleRef.current = 'guest';
+    setConnectingMsg('Joining call…');
+    try {
+      await joinSession(sid, myLang, userId, speakerGender, speakerAge);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Failed to join call.');
+      setConnectingMsg(null);
+      pendingJoinRef.current = null;
+    }
+  };
+
   const handleScanned = async (scannedId: string) => {
     setShowScanner(false);
     const ok = await checkMicPermission();
@@ -361,28 +403,50 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
             {!isDesktop && (
               <View style={styles.orRow}>
                 <View style={styles.orLine} />
-                <Text style={styles.orText}>or</Text>
+                <Text style={styles.orText}>or join a call</Text>
                 <View style={styles.orLine} />
               </View>
             )}
 
-            <TouchableOpacity
-              style={[
-                styles.secondaryBtn,
-                isDesktop && styles.entryCard,
-                isDesktop && styles.entryCardSecondary,
-              ]}
-              onPress={() => setShowScanner(true)}
-              activeOpacity={0.85}
-            >
-              <View style={[styles.entryIconWrap, styles.entryIconWrapSecondary, isDesktop && styles.entryIconWrapDesktop]}>
-                <Feather name="camera" size={isDesktop ? 22 : 20} color={colors.signal} />
-              </View>
-              <View style={isDesktop ? { alignItems: 'center' } : undefined}>
-                <Text style={styles.secondaryBtnText}>Scan to join a call</Text>
-                {isDesktop && <Text style={styles.entryCardSub}>Use the other device's code</Text>}
-              </View>
-            </TouchableOpacity>
+            <View style={[styles.joinRow, isDesktop && styles.joinRowDesktop]}>
+              <TouchableOpacity
+                style={[
+                  styles.secondaryBtn,
+                  !isDesktop && styles.halfBtn,
+                  isDesktop && styles.entryCard,
+                  isDesktop && styles.entryCardSecondary,
+                ]}
+                onPress={() => setShowScanner(true)}
+                activeOpacity={0.85}
+              >
+                <View style={[styles.entryIconWrap, styles.entryIconWrapSecondary, isDesktop && styles.entryIconWrapDesktop]}>
+                  <Feather name="camera" size={isDesktop ? 22 : 18} color={colors.signal} />
+                </View>
+                <View style={isDesktop ? { alignItems: 'center' } : undefined}>
+                  <Text style={styles.secondaryBtnText}>Scan QR</Text>
+                  {isDesktop && <Text style={styles.entryCardSub}>Use partner's code</Text>}
+                </View>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.secondaryBtn,
+                  !isDesktop && styles.halfBtn,
+                  isDesktop && styles.entryCard,
+                  isDesktop && styles.entryCardSecondary,
+                ]}
+                onPress={() => { setManualCode(''); setManualCodeError(null); setShowManualJoin(true); }}
+                activeOpacity={0.85}
+              >
+                <View style={[styles.entryIconWrap, styles.entryIconWrapSecondary, isDesktop && styles.entryIconWrapDesktop]}>
+                  <Feather name="edit-3" size={isDesktop ? 22 : 18} color={colors.signal} />
+                </View>
+                <View style={isDesktop ? { alignItems: 'center' } : undefined}>
+                  <Text style={styles.secondaryBtnText}>Enter code</Text>
+                  {isDesktop && <Text style={styles.entryCardSub}>Paste code or link</Text>}
+                </View>
+              </TouchableOpacity>
+            </View>
           </View>
 
           {/* Recent Conversations — only shown once there's something to show */}
@@ -454,25 +518,51 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
 
             {/* Share buttons — only shown once we have a session ID */}
             {sessionId && (
-              <View style={styles.shareRow}>
+              <>
+                {/* Copyable join link */}
                 <TouchableOpacity
-                  style={styles.whatsappBtn}
-                  onPress={() => handleShareWhatsApp(sessionId)}
-                  activeOpacity={0.8}
+                  style={styles.linkBox}
+                  onPress={() => handleCopyLink(sessionId)}
+                  activeOpacity={0.75}
                 >
-                  {/* WhatsApp logo colour icon */}
-                  <Text style={styles.waBtnIcon}>💬</Text>
-                  <Text style={styles.waBtnText}>Share on WhatsApp</Text>
+                  <Feather name="link-2" size={14} color={colors.signal} style={{ marginRight: 8 }} />
+                  <Text style={styles.linkText} numberOfLines={1} ellipsizeMode="middle">
+                    {`${JOIN_BASE_URL}/${sessionId}`}
+                  </Text>
+                  <View style={[styles.copyBadge, linkCopied && styles.copyBadgeActive]}>
+                    <Feather name={linkCopied ? 'check' : 'copy'} size={12} color={linkCopied ? colors.ink : colors.signal} />
+                    <Text style={[styles.copyBadgeText, linkCopied && styles.copyBadgeTextActive]}>
+                      {linkCopied ? 'Copied' : 'Copy'}
+                    </Text>
+                  </View>
                 </TouchableOpacity>
 
-                <TouchableOpacity
-                  style={styles.nativeShareBtn}
-                  onPress={() => handleShareNative(sessionId)}
-                  activeOpacity={0.8}
-                >
-                  <Feather name="share-2" size={17} color={colors.warm} />
-                </TouchableOpacity>
-              </View>
+                {/* Share invite row with WhatsApp & Share icons in front */}
+                <View style={styles.shareCard}>
+                  <View style={styles.shareLabelGroup}>
+                    <Feather name="send" size={14} color={colors.signal} style={{ marginRight: 8 }} />
+                    <Text style={styles.shareCardText}>Share invite to join</Text>
+                  </View>
+                  <View style={styles.shareActions}>
+                    <TouchableOpacity
+                      style={styles.waBtn}
+                      onPress={() => handleShareWhatsApp(sessionId)}
+                      activeOpacity={0.8}
+                      accessibilityLabel="Share on WhatsApp"
+                    >
+                      <FontAwesome name="whatsapp" size={20} color="#FFFFFF" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.shareSheetBtn}
+                      onPress={() => handleShareNative(sessionId)}
+                      activeOpacity={0.8}
+                      accessibilityLabel="Share invite"
+                    >
+                      <Feather name="share-2" size={17} color={colors.warm} />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </>
             )}
 
             <TouchableOpacity
@@ -496,6 +586,64 @@ export function HomeScreen({ onSessionReady, onOpenProfile, onOpenConversation, 
           onScanned={handleScanned}
           onCancel={() => setShowScanner(false)}
         />
+      </Modal>
+
+      {/* Manual Code Join Modal */}
+      <Modal visible={showManualJoin} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.manualModalHeader}>
+              <View style={styles.manualIconWrap}>
+                <Feather name="hash" size={20} color={colors.signal} />
+              </View>
+              <Text style={styles.modalTitle}>Enter session code</Text>
+              <Text style={styles.modalSubtitle}>Paste a session code or invite link from your partner</Text>
+            </View>
+
+            <View style={styles.inputContainer}>
+              <TextInput
+                style={styles.codeInput}
+                value={manualCode}
+                onChangeText={(t) => { setManualCode(t); setManualCodeError(null); }}
+                placeholder="Code or invite link…"
+                placeholderTextColor={colors.muted}
+                autoCapitalize="none"
+                autoCorrect={false}
+                onSubmitEditing={handleManualJoin}
+                returnKeyType="join"
+                multiline={false}
+              />
+              {manualCode.length > 0 && (
+                <TouchableOpacity onPress={() => setManualCode('')} style={styles.clearBtn}>
+                  <Feather name="x" size={16} color={colors.muted} />
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {manualCodeError && (
+              <View style={styles.errorBox}>
+                <Feather name="alert-circle" size={13} color={colors.danger} />
+                <Text style={styles.errorText}>{manualCodeError}</Text>
+              </View>
+            )}
+
+            <TouchableOpacity
+              style={[styles.primaryBtn, { width: '100%', marginTop: 14 }]}
+              onPress={handleManualJoin}
+              activeOpacity={0.85}
+            >
+              <Feather name="phone-incoming" size={18} color={colors.ink} />
+              <Text style={styles.primaryBtnText}>Join call</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.cancelBtn}
+              onPress={() => { setShowManualJoin(false); setManualCode(''); setManualCodeError(null); }}
+            >
+              <Text style={styles.cancelBtnText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -638,41 +786,151 @@ const styles = StyleSheet.create({
     color: colors.signal, fontSize: 13, fontWeight: '600',
     marginTop: 16, textAlign: 'center',
   },
-  // Share buttons
-  shareRow: {
+  // Mobile join row & buttons
+  joinRow: {
+    flexDirection: 'row',
+    gap: 10,
+    width: '100%',
+  },
+  joinRowDesktop: {
+    flex: 2,
+    flexDirection: 'row',
+    gap: 14,
+  },
+  halfBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    justifyContent: 'center',
+    gap: 10,
+  },
+
+  // Copyable link
+  linkBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface2,
+    borderWidth: 1,
+    borderColor: colors.hair,
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    width: '100%',
+    marginTop: 18,
+  },
+  linkText: {
+    flex: 1,
+    color: colors.muted,
+    fontSize: 12.5,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  copyBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(52,211,153,0.12)',
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    marginLeft: 8,
+  },
+  copyBadgeActive: {
+    backgroundColor: colors.signal,
+  },
+  copyBadgeText: {
+    color: colors.signal,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  copyBadgeTextActive: {
+    color: colors.ink,
+  },
+
+  // Share invite to join card
+  shareCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: colors.surface2,
+    borderWidth: 1,
+    borderColor: colors.hair,
+    borderRadius: 16,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    width: '100%',
+    marginTop: 12,
+  },
+  shareLabelGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  shareCardText: {
+    color: colors.warm,
+    fontSize: 13.5,
+    fontWeight: '600',
+  },
+  shareActions: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    marginTop: 20,
-    width: '100%',
   },
-  whatsappBtn: {
-    flex: 1,
-    flexDirection: 'row',
+  waBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#25D366',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-    backgroundColor: '#25D366',
-    borderRadius: 14,
-    paddingVertical: 13,
-    paddingHorizontal: 16,
     shadowColor: '#25D366',
-    shadowOffset: { width: 0, height: 4 },
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.35,
-    shadowRadius: 10,
-    elevation: 4,
+    shadowRadius: 5,
+    elevation: 3,
   },
-  waBtnIcon: { fontSize: 18 },
-  waBtnText: { color: '#fff', fontSize: 14, fontWeight: '700' },
-  nativeShareBtn: {
-    width: 48,
-    height: 48,
-    borderRadius: 14,
-    backgroundColor: colors.surface2,
+  shareSheetBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.surface3,
     borderWidth: 1,
     borderColor: colors.hair,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+
+  // Manual Join Modal
+  manualModalHeader: {
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  manualIconWrap: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: 'rgba(52,211,153,0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 10,
+  },
+  inputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+    backgroundColor: colors.surface2,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.hair,
+    paddingHorizontal: 14,
+  },
+  codeInput: {
+    flex: 1,
+    color: colors.warm,
+    fontSize: 14,
+    paddingVertical: 14,
+  },
+  clearBtn: {
+    padding: 6,
   },
 
   cancelBtn: {

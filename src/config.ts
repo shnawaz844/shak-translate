@@ -17,15 +17,16 @@ export {
   APP_LOGO,
   APP_OPENING_SCREEN,
 } from '../app-config';
-const wsUrl = process.env.EXPO_PUBLIC_WS_URL || 'ws://16.4.55.207:8080';
+const wsUrl = process.env.EXPO_PUBLIC_WS_URL || 'wss://www.shaktalk.com';
 export const WS_URL = wsUrl;
 
 // HTTP equivalent of WS_URL, for plain REST calls (e.g. /clerk/update-profile).
 // Derived from WS_URL so both always point at the same backend.
 export const API_URL = WS_URL.replace(/^ws/, 'http');
 
-// Base URL for shareable session join links (e.g. https://…/join/<sessionId>)
-export const JOIN_BASE_URL = `${API_URL}/join`;
+// Shareable domain & join link for WhatsApp and QR invites
+export const APP_DOMAIN = process.env.EXPO_PUBLIC_APP_DOMAIN || 'www.shaktalk.com';
+export const JOIN_BASE_URL = `https://${APP_DOMAIN}/join`;
 
 export const LANGUAGES = [
   { code: 'en-US', name: 'English' },
