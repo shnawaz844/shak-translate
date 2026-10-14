@@ -24,7 +24,7 @@ export const WS_URL = wsUrl;
 // Derived from WS_URL so both always point at the same backend.
 export const API_URL = WS_URL.replace(/^ws/, 'http');
 
-// Shareable domain & join link for WhatsApp and QR invites
+// Shareable domain & join link for WhatsApp and QR invites....
 export const APP_DOMAIN = process.env.EXPO_PUBLIC_APP_DOMAIN || 'www.shaktalk.com';
 export const JOIN_BASE_URL = `https://${APP_DOMAIN}/join`;
 
