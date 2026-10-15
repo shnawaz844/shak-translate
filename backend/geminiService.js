@@ -347,9 +347,9 @@ class LiveTranslationSession {
     }
 
     // Minimum burst size:
-    // First burst: ~100ms (4,800 bytes @ 24kHz 16-bit mono) for ultra-fast startup (<700ms).
-    // Subsequent bursts: ~300ms (14,400 bytes) to maintain a healthy jitter buffer.
-    const minBytes = this.audioChunkIndex === 0 ? 4800 : 14400;
+    // Low-latency continuous streaming without large buffer stalls:
+    // 2,400 bytes @ 24kHz 16-bit mono (~50ms) for ultra-fast audio delivery.
+    const minBytes = 2400;
     if (!force && this.inFlightBurstBytes < minBytes) return;
 
     const burstPcm = Buffer.concat(this.inFlightBurstBuffers);
@@ -609,8 +609,8 @@ ABSOLUTE RULES:
               // (scriptMismatch returns false for < 6 letters — that's fine,
               // we just wait for the next inputTranscription chunk).
               const letters = (this.fullOriginalText.match(/\p{L}/gu) || []).length;
-              if (letters >= 3) {
-                // Even 3 letters in the right script is enough signal to release.
+              if (letters >= 1) {
+                // Immediate release on the first detected letter of the expected script.
                 this._confirmLanguage();
               }
             }
