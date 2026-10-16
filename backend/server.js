@@ -211,9 +211,9 @@ const httpServer = http.createServer(async (req, res) => {
     const testId = 'health-check-' + Date.now();
     try {
       await warmupSession(testId, 'host', 'English', 'Hindi', {}, {
-        onAudioChunk: () => {},
-        onTurnComplete: () => {},
-        onInterrupted: () => {},
+        onAudioChunk: () => { },
+        onTurnComplete: () => { },
+        onInterrupted: () => { },
         onError: (e) => { console.error('[gemini-test] Error:', e.message); },
       });
       closeSession(testId, 'host');
@@ -385,7 +385,7 @@ const httpServer = http.createServer(async (req, res) => {
         <div style="color: #9BA8A4; font-size: 13px; line-height: 1.5;">
           <strong style="color:#fff;">${APP_NAME}</strong> will be available on the<br>
           <strong style="color:#fff;">App Store</strong> &amp; <strong style="color:#fff;">Google Play Store</strong> shortly.<br><br>
-          Stay tuned — we'll be live soon! 🎉
+          Stay tuned - we'll be live soon! 🎉
         </div>
       </div>
     </div>
