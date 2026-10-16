@@ -371,10 +371,23 @@ const httpServer = http.createServer(async (req, res) => {
       <span>📞</span> Open Call in ${APP_NAME}
     </a>
 
-    <div id="downloadSection">
-      <a href="${LATEST_ANDROID_APK_URL}" id="downloadBtn" class="btn btn-secondary">
-        <span>🤖</span> Download Android App (APK)
-      </a>
+    <div id="downloadSection" style="display:none;">
+      <div id="comingSoonBox" style="
+        background: rgba(47, 224, 168, 0.06);
+        border: 1px solid rgba(47, 224, 168, 0.2);
+        border-radius: 14px;
+        padding: 18px 16px;
+        margin-bottom: 12px;
+        text-align: center;
+      ">
+        <div style="font-size: 22px; margin-bottom: 8px;">🚀</div>
+        <div style="color: #2FE0A8; font-weight: 700; font-size: 15px; margin-bottom: 6px;">App Coming Soon!</div>
+        <div style="color: #9BA8A4; font-size: 13px; line-height: 1.5;">
+          <strong style="color:#fff;">${APP_NAME}</strong> will be available on the<br>
+          <strong style="color:#fff;">App Store</strong> &amp; <strong style="color:#fff;">Google Play Store</strong> shortly.<br><br>
+          Stay tuned — we'll be live soon! 🎉
+        </div>
+      </div>
     </div>
 
     <div class="divider"></div>
@@ -391,8 +404,6 @@ const httpServer = http.createServer(async (req, res) => {
 
   <script>
     var sessionId = "${sessionId}";
-    var apkUrl = "${LATEST_ANDROID_APK_URL}";
-    var isAndroid = /Android/i.test(navigator.userAgent);
 
     function copySessionCode() {
       if (navigator.clipboard) {
@@ -425,12 +436,11 @@ const httpServer = http.createServer(async (req, res) => {
       if (!appOpened && !document.hidden) {
         var statusEl = document.getElementById("statusText");
         if (statusEl) {
-          statusEl.innerHTML = "Don't have <strong>${APP_NAME}</strong> installed yet?<br>Download the Android APK below to join:";
+          statusEl.innerHTML = "Don't have <strong>${APP_NAME}</strong> installed yet?<br>The app will be available on the App Store &amp; Google Play soon!";
         }
-        var dlBtn = document.getElementById("downloadBtn");
-        if (dlBtn && isAndroid) {
-          dlBtn.className = "btn btn-primary";
-          dlBtn.style.boxShadow = "0 4px 20px rgba(47, 224, 168, 0.4)";
+        var dlSection = document.getElementById("downloadSection");
+        if (dlSection) {
+          dlSection.style.display = "block";
         }
       }
     }, 2000);

@@ -104,3 +104,9 @@ For Production = eas build --profile production --platform android  --clear-cach
 For development = eas build --profile development --platform ios  --clear-cache
 For proview = eas build --profile preview --platform ios  --clear-cache
 For Production = eas build --profile production --platform ios  --clear-cache *
+
+
+
+## Submit Build to IOS (app specific password)
+
+$env:EXPO_APPLE_APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx"; eas submit --platform ios --latest
